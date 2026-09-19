@@ -42,7 +42,7 @@ class GamePilotHUD(ctk.CTk):
 
         # Keyboard shortcuts
         self.bind("<Escape>", lambda e: self.emergency_stop())
-        self.bind("<F6>", lambda e: self.toggle_pilot(armed=True))
+        self.current_hotkey = "None (Click Button Only)"
 
         # Initial snap attempt
         self.after(500, self._auto_detect_game_window)
@@ -205,12 +205,47 @@ class GamePilotHUD(ctk.CTk):
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#00ffcc",
         )
-        sec3_lbl.pack(anchor="w", padx=pad_x, pady=(10, 8))
+        # 3. Action Buttons & Start Configuration
+        sec3_lbl = ctk.CTkLabel(
+            parent,
+            text="PILOT ENGAGEMENT",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#00ffcc",
+        )
+        sec3_lbl.pack(anchor="w", padx=pad_x, pady=(10, 4))
+
+        # Start Options Frame
+        opt_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        opt_frame.pack(fill="x", padx=pad_x, pady=(0, 8))
+
+        self.delay_switch = ctk.CTkSwitch(
+            opt_frame,
+            text="3s Focus Delay",
+            font=ctk.CTkFont(size=11),
+            text_color="#c0c0c0",
+            progress_color="#00ffcc",
+        )
+        self.delay_switch.select()
+        self.delay_switch.pack(side="left")
+
+        self.hotkey_selector = ctk.CTkOptionMenu(
+            opt_frame,
+            values=["No Hotkey (Click Only)", "Enter", "F2", "Tab", "F8"],
+            font=ctk.CTkFont(size=11),
+            width=135,
+            height=24,
+            fg_color="#1a1c26",
+            button_color="#2b2f42",
+            dropdown_fg_color="#1a1c26",
+            command=self._on_hotkey_change,
+        )
+        self.hotkey_selector.pack(side="right")
 
         # Big Green Start Button
+        self.countdown_val = 0
         self.arm_btn = ctk.CTkButton(
             parent,
-            text="🚀 ENGAGE GAMEPILOT [F6]\n(Live Automated Controls)",
+            text="🚀 START GAMEPILOT\n(Click to Play)",
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#00d26a",
             hover_color="#00b058",
@@ -466,39 +501,98 @@ class GamePilotHUD(ctk.CTk):
             # Schedule auto window snap after 1.5s
             self.after(1500, lambda: self.core.vision.snap_to_window("Dino"))
 
+    def _on_hotkey_change(self, choice: str):
+        if hasattr(self, "_active_bound_key") and self._active_bound_key:
+            try:
+                self.unbind(self._active_bound_key)
+            except Exception:
+                pass
+            self._active_bound_key = None
+
+        key_map = {
+            "Enter": "<Return>",
+            "F2": "<F2>",
+            "Tab": "<Tab>",
+            "F8": "<F8>",
+        }
+        if choice in key_map:
+            seq = key_map[choice]
+            self.bind(seq, lambda e: self.toggle_pilot(armed=True))
+            self._active_bound_key = seq
+
     def toggle_pilot(self, armed: bool):
+        if getattr(self, "countdown_timer", None):
+            self.after_cancel(self.countdown_timer)
+            self.countdown_timer = None
+            self._update_status_idle()
+            return
+
         if self.core.is_running:
             self.core.stop()
             self._update_status_idle()
         else:
-            self.core.start(arm_inputs=armed)
-            if armed:
-                self.status_badge.configure(
-                    text="● LIVE AUTOMATION ARMED",
-                    text_color="#000000",
-                    fg_color="#00d26a",
-                )
-                self.arm_btn.configure(text="🛑 DISENGAGE [F6]", fg_color="#ff2a55")
+            if armed and self.delay_switch.get() == 1:
+                self._start_countdown(3)
             else:
-                self.status_badge.configure(
-                    text="● MONITORING ONLY",
-                    text_color="#ffffff",
-                    fg_color="#0090ff",
-                )
-                self.monitor_btn.configure(text="🛑 Stop Monitoring", fg_color="#ff2a55")
+                self._engage_now(armed)
+
+    def _start_countdown(self, seconds_left: int):
+        if seconds_left > 0:
+            self.arm_btn.configure(
+                text=f"⏳ Starting in {seconds_left}s...\nClick your game window!",
+                fg_color="#ff9900",
+            )
+            self.status_badge.configure(
+                text=f"● COUNTDOWN {seconds_left}s",
+                text_color="#000000",
+                fg_color="#ff9900",
+            )
+            self.countdown_timer = self.after(
+                1000, lambda: self._start_countdown(seconds_left - 1)
+            )
+        else:
+            self.countdown_timer = None
+            self._engage_now(armed=True)
+
+    def _engage_now(self, armed: bool):
+        self.core.start(arm_inputs=armed)
+        if armed:
+            self.status_badge.configure(
+                text="● LIVE AUTOMATION ARMED",
+                text_color="#000000",
+                fg_color="#00d26a",
+            )
+            self.arm_btn.configure(
+                text="🛑 STOP GAMEPILOT\n(Click or press ESC)", fg_color="#ff2a55"
+            )
+        else:
+            self.status_badge.configure(
+                text="● MONITORING ONLY",
+                text_color="#ffffff",
+                fg_color="#0090ff",
+            )
+            self.monitor_btn.configure(
+                text="🛑 Stop Monitoring", fg_color="#ff2a55"
+            )
 
     def emergency_stop(self):
+        if getattr(self, "countdown_timer", None):
+            self.after_cancel(self.countdown_timer)
+            self.countdown_timer = None
         self.core.stop()
         self._update_status_idle()
 
     def _update_status_idle(self):
+        if getattr(self, "countdown_timer", None):
+            self.after_cancel(self.countdown_timer)
+            self.countdown_timer = None
         self.status_badge.configure(
             text="● SYSTEM STANDBY",
             text_color="#70758a",
             fg_color="#1a1c26",
         )
         self.arm_btn.configure(
-            text="🚀 ENGAGE GAMEPILOT [F6]\n(Live Automated Controls)",
+            text="🚀 START GAMEPILOT\n(Click to Play)",
             fg_color="#00d26a",
         )
         self.monitor_btn.configure(

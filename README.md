@@ -39,9 +39,11 @@ Click **🌐 Open Offline Dino Game** in the HUD (or run `python cli.py open-din
 
 ### 3. Engage GamePilot
 1. Select the browser window from the **Viewport Calibration** dropdown and click **🎯 Snap to Selected Window**.
-2. Click **🚀 ENGAGE GAMEPILOT [F6]**.
+2. Click **🚀 START GAMEPILOT (Click to Play)**.
+   * *A 3-second countdown gives you time to click into your game window.*
+   * *You can also configure an optional hotkey (`Enter`, `F2`, `Tab`) or use purely on-screen clicks.*
 3. Watch Jev autonomously detect obstacles, calculate jump distances, duck mid-air birds, and recover after game-overs!
-4. Press **ESC** at any time to immediately disarm all controls.
+4. Press **ESC** or click **🛑 STOP GAMEPILOT** at any time to immediately disarm all controls.
 
 ---
 
