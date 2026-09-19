@@ -996,8 +996,12 @@ class GamePilotHUD(ctk.CTk):
         self.mini_urgency_bar.set(urg)
         self.urgency_pct.configure(text=f"{int(urg * 100)}% Threat Urgency")
 
-        # Telemetry fields for UniversalSceneState
-        if hasattr(state, "threats") and state.threats:
+        # Telemetry fields for UniversalSceneState & Chess
+        if hasattr(state, "fen"):
+            turn = "White" if state.turn else "Black"
+            self.obs_lbl.configure(text=f"Chess Turn: {turn} (Move {state.fullmove_number})")
+            self.dist_lbl.configure(text=f"FEN: {state.fen()[:32]}...")
+        elif hasattr(state, "threats") and state.threats:
             t = state.threats[0]
             self.obs_lbl.configure(text=f"Threat: {int(t.distance_to_player)}px away")
             self.dist_lbl.configure(

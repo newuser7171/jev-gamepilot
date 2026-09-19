@@ -1,0 +1,35 @@
+[
+  {
+    "id": "custom_chess",
+    "name": "\u2b50 chess",
+    "category": "clicker",
+    "description": "Custom AI profile for chess",
+    "actions": [
+      {
+        "name": "jump",
+        "key": "space",
+        "description": "Jump over oncoming hazards",
+        "duration_sec": 0.1,
+        "is_mouse_click": false
+      },
+      {
+        "name": "duck",
+        "key": "down",
+        "description": "Duck or slide under overhead obstacles",
+        "duration_sec": 0.1,
+        "is_mouse_click": false
+      },
+      {
+        "name": "wait",
+        "key": "none",
+        "description": "Safe horizon, hold current position",
+        "duration_sec": 0.1,
+        "is_mouse_click": false
+      }
+    ],
+    "default_window_keyword": "",
+    "scan_direction": "right",
+    "auto_restart_key": "space",
+    "is_builtin": false
+  }
+]

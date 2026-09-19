@@ -126,6 +126,29 @@ DEFAULT_PROFILES: List[GameProfile] = [
         ],
     ),
     GameProfile(
+        id="chess_copilot",
+        name="♟️ Chess.com & Lichess Screen Copilot",
+        category="strategy",
+        description="Analyzes 8x8 chessboard on screen, evaluates tactical moves, and plays or highlights squares",
+        default_window_keyword="chess",
+        scan_direction="omnidirectional",
+        auto_restart_key="none",
+        is_builtin=True,
+        actions=[
+            GameAction(
+                name="play_best_move",
+                key="mouse_left",
+                description="Execute Jev recommended move by clicking start and target squares",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="analyze_only",
+                key="none",
+                description="Calculate and display optimal move overlay without sending clicks",
+            ),
+        ],
+    ),
+    GameProfile(
         id="aim_clicker",
         name="🎯 Target Clicker & Aim Trainer (Osu / Aim Labs)",
         category="clicker",

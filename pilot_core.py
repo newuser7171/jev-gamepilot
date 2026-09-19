@@ -4,12 +4,19 @@ Executes real-time perception, dynamic Jev System One decision-making,
 and universal input automation across any game profile.
 """
 
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
+
+# Ensure Windows cp1252 handles Unicode emojis safely
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import cv2
 import numpy as np
 from adapters.dino_adapter import DinoAdapter, DinoGameState
+from adapters.screen_chess_adapter import ScreenChessAdapter
 from input_controller import InputController
 from profile_manager import GameAction, GameProfile, ProfileManager
 from universal_brain import UniversalBrain
@@ -25,8 +32,9 @@ class PilotCore:
         self.universal_brain = UniversalBrain()
         self.input_ctrl = InputController()
 
-        # Dino specialized adapter for pixel-perfect Chrome Dino
+        # Specialized game adapters
         self.dino_adapter = DinoAdapter()
+        self.chess_adapter = ScreenChessAdapter()
 
         # Active game profile
         self.current_profile: GameProfile = self.profile_mgr.get_profile(
@@ -151,8 +159,45 @@ class PilotCore:
                             self.total_actions += 1
                             last_action_time = now
 
-                    # Telemetry payload
                     telemetry_state = state
+
+                elif self.current_profile.id == "chess_copilot":
+                    # Screen Chess Copilot pipeline
+                    self.chess_adapter.calib.left = reg["left"]
+                    self.chess_adapter.calib.top = reg["top"]
+                    self.chess_adapter.calib.width = reg["width"]
+                    self.chess_adapter.calib.height = reg["height"]
+
+                    now = time.time()
+                    move_res = None
+                    if now - last_action_time > 2.0:
+                        move_res = self.chess_adapter.query_jev_best_move(
+                            self.universal_brain.client,
+                            model=self.universal_brain.model_name,
+                        )
+                        if move_res:
+                            self.last_decision = {
+                                "action": f"Play {move_res['san']}",
+                                "threat_score": min(1.0, move_res["eval"] / 4.0),
+                                "confidence": move_res["confidence"],
+                                "latency_ms": move_res["latency_ms"],
+                                "source": "jev_chess_master",
+                                "target_coords": move_res["to_coords"],
+                            }
+                            if self.is_armed:
+                                fx, fy = move_res["from_coords"]
+                                tx, ty = move_res["to_coords"]
+                                self.input_ctrl.click_at(fx, fy)
+                                time.sleep(0.08)
+                                self.input_ctrl.click_at(tx, ty)
+                                self.chess_adapter.board.push(move_res["move"])
+                                self.total_actions += 1
+                            last_action_time = now
+
+                    annotated = self.chess_adapter.render_board_overlay(
+                        raw_frame, move_res
+                    )
+                    telemetry_state = self.chess_adapter.board
 
                 else:
                     # Universal Vision & Scene Perception pipeline
