@@ -5,6 +5,8 @@ evaluating tactical choices, threat severity, and reflex triggers.
 """
 
 import os
+import json
+import urllib.request
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -143,7 +145,85 @@ class UniversalBrain:
             return decision
 
         except Exception as e:
-            print(f"[UniversalBrain] Query error: {e}")
+            # Fallback to keyless Jev decision model via classifier.dev
+            return self.query_classifier_dev(profile, scene)
+
+    def query_classifier_dev(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Keyless fallback directly using classifier.dev (Jev System One).
+        Ensures zero-config instant play even without TYPESAFE_API_KEY.
+        """
+        t0 = time.perf_counter()
+        try:
+            labels = [action.name for action in profile.actions]
+            if "wait" not in labels:
+                labels.append("wait")
+
+            threat_desc = "none in view"
+            threat_score = 0.0
+            if scene.nearest_threat:
+                dist = round(scene.nearest_threat.distance_to_player, 1)
+                threat_desc = f"obstacle at distance {dist}px (w={scene.nearest_threat.w}, h={scene.nearest_threat.h})"
+                threat_score = max(0.0, min(1.0, 1.0 - (dist / 300.0)))
+
+            player_desc = "active"
+            if scene.player:
+                player_desc = f"pos=({scene.player.x}, {scene.player.y}), vy={round(scene.player.vy, 1)}"
+
+            situation = (
+                f"Game: {profile.name} ({profile.category}). Player: {player_desc}. "
+                f"Oncoming: {threat_desc}. Actions: "
+                + "; ".join([f"{a.name} ({a.description})" for a in profile.actions])
+            )
+
+            payload = {
+                "labels": labels,
+                "input": situation,
+                "instructions": (
+                    f"Select the single best immediate action for {profile.name}. "
+                    "Avoid obstacles, jump or duck hazards, or wait if safe."
+                )
+            }
+
+            req = urllib.request.Request(
+                "https://classifier.dev",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "jev-gamepilot/2.0 (TypeSafe Jev System One)"
+                }
+            )
+
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.load(resp)
+
+            action = data.get("label", "wait")
+            conf = data.get("confidence", 0.95)
+            latency = (time.perf_counter() - t0) * 1000
+
+            target_coords = None
+            if scene.best_target:
+                target_coords = (
+                    scene.best_target.click_x,
+                    scene.best_target.click_y,
+                )
+
+            decision = {
+                "action": action,
+                "threat_score": round(threat_score, 2),
+                "confidence": round(conf, 3),
+                "latency_ms": round(latency, 1),
+                "source": "jev_classifier_dev",
+                "target_coords": target_coords,
+            }
+            with self._lock:
+                self.last_decision = decision
+            return decision
+
+        except Exception as err:
+            print(f"[UniversalBrain] Keyless fallback error: {err}")
             return None
 
     def query_jev_async(self, profile: GameProfile, scene: UniversalSceneState):
