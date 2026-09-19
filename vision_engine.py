@@ -17,6 +17,16 @@ class VisionEngine:
         Initialize the vision engine.
         target_region: dict with keys 'left', 'top', 'width', 'height'
         """
+        # Ensure thread is attached to the user's interactive desktop
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hdesk = user32.OpenDesktopW("default", 0, False, 0x10000000)
+            if hdesk:
+                user32.SetThreadDesktop(hdesk)
+        except Exception:
+            pass
+
         self.sct = mss.mss()
         self.region = target_region or self._get_default_region()
         self.last_frame: Optional[np.ndarray] = None

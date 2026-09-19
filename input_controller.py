@@ -23,15 +23,25 @@ KEYEVENTF_KEYUP = 0x0002
 
 
 def _send_key_down(vk_code: int):
-    ctypes.windll.user32.keybd_event(vk_code, 0, 0, 0)
+    scan = ctypes.windll.user32.MapVirtualKeyW(vk_code, 0)
+    ctypes.windll.user32.keybd_event(vk_code, scan, 0, 0)
 
 
 def _send_key_up(vk_code: int):
-    ctypes.windll.user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
+    scan = ctypes.windll.user32.MapVirtualKeyW(vk_code, 0)
+    ctypes.windll.user32.keybd_event(vk_code, scan, KEYEVENTF_KEYUP, 0)
 
 
 class InputController:
     def __init__(self):
+        try:
+            user32 = ctypes.windll.user32
+            hdesk = user32.OpenDesktopW("default", 0, False, 0x10000000)
+            if hdesk:
+                user32.SetThreadDesktop(hdesk)
+        except Exception:
+            pass
+
         self.is_enabled = False
         self.is_ducking = False
         self.last_action_time = 0.0
