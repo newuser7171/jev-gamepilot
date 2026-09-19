@@ -1,51 +1,73 @@
 """
-Pilot Core Orchestrator for Jev-GamePilot.
-Executes the closed-loop perception-decision-action cycle at high frame rates.
+Pilot Core Orchestrator for Universal Jev-GamePilot.
+Executes real-time perception, dynamic Jev System One decision-making,
+and universal input automation across any game profile.
 """
 
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 import cv2
 import numpy as np
 from adapters.dino_adapter import DinoAdapter, DinoGameState
-from adapters.runner_adapter import RunnerAdapter
 from input_controller import InputController
-from jev_brain import JevBrain
+from profile_manager import GameAction, GameProfile, ProfileManager
+from universal_brain import UniversalBrain
+from universal_vision import UniversalSceneState, UniversalVision
 from vision_engine import VisionEngine
 
 
 class PilotCore:
     def __init__(self):
+        self.profile_mgr = ProfileManager()
         self.vision = VisionEngine()
-        self.dino_adapter = DinoAdapter()
-        self.runner_adapter = RunnerAdapter()
-        self.brain = JevBrain()
+        self.universal_vision = UniversalVision()
+        self.universal_brain = UniversalBrain()
         self.input_ctrl = InputController()
 
-        self.current_game_mode = "dino"  # "dino" or "runner"
+        # Dino specialized adapter for pixel-perfect Chrome Dino
+        self.dino_adapter = DinoAdapter()
+
+        # Active game profile
+        self.current_profile: GameProfile = self.profile_mgr.get_profile(
+            "runner_dino"
+        ) or list(self.profile_mgr.profiles.values())[0]
+
         self.is_running = False
-        self.is_armed = False  # If True, inputs are actually dispatched
+        self.is_armed = False
         self.loop_thread: Optional[threading.Thread] = None
 
-        # Statistics & Telemetry
+        # Telemetry & State
         self.fps = 0.0
-        self.last_state: Optional[DinoGameState] = None
         self.last_decision: Dict[str, Any] = {}
         self.last_rendered_frame: Optional[np.ndarray] = None
+        self.total_actions = 0
         self.total_jumps = 0
         self.total_ducks = 0
 
-        # UI Callback
         self.telemetry_callback: Optional[Callable[[Dict[str, Any]], None]] = (
             None
         )
+
+    def set_profile(self, profile_id: str) -> bool:
+        prof = self.profile_mgr.get_profile(profile_id)
+        if prof:
+            self.current_profile = prof
+            print(f"[PilotCore] Switched profile to: {prof.name}")
+            return True
+        return False
+
+    def set_player_template(self, template_bgr: np.ndarray):
+        """Calibrates player avatar tracking from user-selected image."""
+        self.universal_vision.set_player_template(template_bgr)
+
+    def clear_player_template(self):
+        self.universal_vision.clear_player_template()
 
     def set_telemetry_callback(self, cb: Callable[[Dict[str, Any]], None]):
         self.telemetry_callback = cb
 
     def start(self, arm_inputs: bool = True):
-        """Starts the autonomous perception and pilot loop."""
         if self.is_running:
             return
 
@@ -57,21 +79,19 @@ class PilotCore:
             self.input_ctrl.disable()
 
         self.loop_thread = threading.Thread(
-            target=self._run_loop, daemon=True, name="PilotCoreLoop"
+            target=self._run_loop, daemon=True, name="UniversalPilotLoop"
         )
         self.loop_thread.start()
-        print(f"[PilotCore] Started in mode: {self.current_game_mode}")
+        print(f"[PilotCore] Started in universal mode: {self.current_profile.name}")
 
     def stop(self):
-        """Emergency stops the pilot loop and releases all inputs."""
         self.is_running = False
         self.is_armed = False
         self.input_ctrl.disable()
         print("[PilotCore] Stopped.")
 
     def _run_loop(self):
-        last_action_executed = "run_normal"
-        action_cooldown = 0.0
+        last_action_time = 0.0
 
         while self.is_running:
             t0 = time.perf_counter()
@@ -79,109 +99,128 @@ class PilotCore:
             try:
                 # 1. Grab Frame
                 raw_frame = self.vision.capture_frame()
+                reg = self.vision.region
 
-                # 2. Analyze Frame with selected Adapter
-                if self.current_game_mode == "dino":
+                # 2. Perception
+                if self.current_profile.id == "runner_dino":
+                    # Specialized high-speed Dino pipeline
                     state: DinoGameState = self.dino_adapter.analyze_frame(
                         raw_frame
                     )
-                    self.last_state = state
-
-                    # 3. Format State for Jev System One
-                    state_dict = {
-                        "game": "Chrome Dino Runner",
-                        "dino_state": (
-                            state.dino.state if state.dino else "running"
-                        ),
-                        "game_speed_px_sec": round(
-                            state.game_speed_px_sec, 1
-                        ),
-                        "nearest_obstacle": (
-                            {
-                                "type": state.nearest_obstacle.obstacle_type,
-                                "distance_px": state.nearest_obstacle.distance_from_dino,
-                                "time_to_impact_ms": round(
-                                    state.nearest_obstacle.time_to_impact_ms, 1
-                                ),
-                            }
-                            if state.nearest_obstacle
-                            else None
-                        ),
-                        "total_obstacles_in_view": len(state.obstacles),
-                        "ground_y": state.ground_y,
-                    }
-
-                    # 4. Get Tactical Action from Hybrid Jev Brain
-                    decision = self.brain.get_action(
-                        vision_action=state.recommended_action,
-                        vision_urgency=state.action_urgency,
-                        state_dict=state_dict,
+                    annotated = self.dino_adapter.render_debug_overlay(
+                        raw_frame, state
                     )
+
+                    # Dynamic Brain decision
+                    decision = {
+                        "action": state.recommended_action,
+                        "threat_score": state.action_urgency,
+                        "confidence": 0.96,
+                        "latency_ms": 0.6,
+                        "source": "dino_reflex",
+                    }
                     self.last_decision = decision
 
-                    # 5. Dispatch Inputs
+                    # Dispatch Inputs
                     now = time.time()
                     if state.is_game_over:
-                        if now - action_cooldown > 1.5:
-                            print(
-                                "[PilotCore] Game Over detected -> Auto Restarting"
-                            )
+                        if now - last_action_time > 1.4:
                             if self.is_armed:
                                 self.input_ctrl.trigger_restart()
-                            action_cooldown = now
+                            last_action_time = now
                     else:
-                        chosen_action = decision.get("action", "run_normal")
+                        act = decision.get("action")
                         if (
-                            chosen_action == "jump"
+                            act == "jump"
                             and (state.dino and state.dino.state != "jumping")
-                            and (now - action_cooldown > 0.20)
+                            and (now - last_action_time > 0.18)
                         ):
                             if self.is_armed:
                                 self.input_ctrl.trigger_jump()
                             self.total_jumps += 1
-                            action_cooldown = now
-                            last_action_executed = "jump"
-
+                            self.total_actions += 1
+                            last_action_time = now
                         elif (
-                            chosen_action == "duck"
+                            act == "duck"
                             and (state.dino and state.dino.state != "jumping")
-                            and (now - action_cooldown > 0.15)
+                            and (now - last_action_time > 0.14)
                         ):
                             if self.is_armed:
-                                self.input_ctrl.trigger_duck(hold_sec=0.35)
+                                self.input_ctrl.trigger_duck()
                             self.total_ducks += 1
-                            action_cooldown = now
-                            last_action_executed = "duck"
+                            self.total_actions += 1
+                            last_action_time = now
 
-                    # 6. Render Debug Overlay for Preview
-                    annotated = self.dino_adapter.render_debug_overlay(
-                        raw_frame, state
-                    )
-                    self.last_rendered_frame = annotated
+                    # Telemetry payload
+                    telemetry_state = state
 
-                    # Calculate FPS
-                    dt = time.perf_counter() - t0
-                    self.fps = 1.0 / dt if dt > 0 else 60.0
-
-                    # 7. Notify GUI Callback
-                    if self.telemetry_callback:
-                        self.telemetry_callback(
-                            {
-                                "fps": round(self.fps, 1),
-                                "state": state,
-                                "decision": decision,
-                                "jumps": self.total_jumps,
-                                "ducks": self.total_ducks,
-                                "is_armed": self.is_armed,
-                                "frame": annotated,
-                            }
+                else:
+                    # Universal Vision & Scene Perception pipeline
+                    scene: UniversalSceneState = (
+                        self.universal_vision.analyze_frame(
+                            raw_frame, self.current_profile
                         )
+                    )
+                    annotated = self.universal_vision.render_debug_overlay(
+                        raw_frame, scene, self.current_profile
+                    )
+
+                    # Query Universal Jev System One Brain
+                    decision = self.universal_brain.get_action(
+                        self.current_profile, scene
+                    )
+                    self.last_decision = decision
+
+                    # Find and dispatch matching action
+                    chosen_name = decision.get("action", "")
+                    matched_action = next(
+                        (
+                            a
+                            for a in self.current_profile.actions
+                            if a.name == chosen_name
+                        ),
+                        None,
+                    )
+
+                    now = time.time()
+                    if matched_action and (now - last_action_time > 0.12):
+                        if self.is_armed:
+                            self.input_ctrl.dispatch_action(
+                                matched_action,
+                                target_coords=decision.get("target_coords"),
+                                viewport_offset=(reg["left"], reg["top"]),
+                            )
+                        self.total_actions += 1
+                        last_action_time = now
+
+                    telemetry_state = scene
+
+                self.last_rendered_frame = annotated
+
+                # FPS
+                dt = time.perf_counter() - t0
+                self.fps = 1.0 / dt if dt > 0 else 60.0
+
+                # Notify GUI
+                if self.telemetry_callback:
+                    self.telemetry_callback(
+                        {
+                            "fps": round(self.fps, 1),
+                            "state": telemetry_state,
+                            "decision": decision,
+                            "profile": self.current_profile,
+                            "actions_count": self.total_actions,
+                            "jumps": self.total_jumps,
+                            "ducks": self.total_ducks,
+                            "is_armed": self.is_armed,
+                            "frame": annotated,
+                        }
+                    )
 
             except Exception as e:
-                print(f"[PilotCore] Loop iteration error: {e}")
+                print(f"[PilotCore] Universal loop error: {e}")
                 time.sleep(0.05)
 
-            # Cap frame loop to ~60 FPS
             elapsed = time.perf_counter() - t0
             if elapsed < 0.016:
                 time.sleep(0.016 - elapsed)

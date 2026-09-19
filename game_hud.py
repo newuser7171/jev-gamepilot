@@ -1,9 +1,10 @@
 """
-Cyber Desktop GUI for Jev-GamePilot.
-Built with CustomTkinter to deliver a high-tech gaming HUD with:
-1. Native Embedded 60 FPS Dino Arena (play manually or turn on Jev Autopilot with zero window occlusion).
-2. External Screen Grabber (tracks Chrome/Edge/Emulators live via mss and OpenCV).
-3. TypeSafe Jev System One Brain Telemetry Deck.
+Universal Cyber Desktop GUI for Jev-GamePilot.
+Built with CustomTkinter to deliver a universal autonomous gaming AI:
+1. Dynamic Game Profile System (Dino Runner, Subway Surfers, Flappy Bird, Aim Trainer, 2D Platformer, + Custom).
+2. Native 60 FPS Dino Arena + Universal External Screen Grabber for ANY game.
+3. Player Avatar Calibration & Threat Vector Tracking.
+4. Floating Mini-Bar Mode for playing games full-screen.
 """
 
 import ctypes
@@ -16,10 +17,11 @@ import cv2
 import customtkinter as ctk
 import numpy as np
 from PIL import Image, ImageTk
+from custom_profile_dialog import CustomProfileDialog
 from embedded_dino import EmbeddedDinoArena
 from pilot_core import PilotCore
+from profile_manager import GameAction, GameProfile
 
-# Cyber aesthetic styling
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
@@ -28,9 +30,9 @@ class GamePilotHUD(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Jev-GamePilot // Autonomous AI Gaming Agent")
-        self.geometry("1140x740")
-        self.minsize(1020, 680)
+        self.title("Jev-GamePilot // Universal Autonomous Gaming AI")
+        self.geometry("1160x760")
+        self.minsize(1040, 700)
         self.configure(fg_color="#0a0b10")
 
         self.core = PilotCore()
@@ -38,30 +40,30 @@ class GamePilotHUD(ctk.CTk):
 
         # State tracking
         self.current_img_tk: ImageTk.PhotoImage | None = None
-        self.is_monitoring = False
         self.is_armed = False
         self.active_arena_mode = "native"  # "native" or "external"
         self.countdown_timer = None
-        self.countdown_val = 0
         self._active_bound_key = None
+        self.is_mini_mode = False
 
         self._build_header()
         self._build_main_layout()
+        self._build_mini_layout()
 
         # Keyboard shortcuts
         self.bind("<Escape>", lambda e: self.emergency_stop())
 
-        # Auto-detect game window on load
+        # Auto-detect game window on start
         self.after(500, self._auto_detect_game_window)
 
     def _build_header(self):
-        header_frame = ctk.CTkFrame(
+        self.header_frame = ctk.CTkFrame(
             self, fg_color="#12131c", corner_radius=0, height=60
         )
-        header_frame.pack(fill="x", side="top", padx=0, pady=0)
+        self.header_frame.pack(fill="x", side="top", padx=0, pady=0)
 
         # Title & Subtitle
-        title_box = ctk.CTkFrame(header_frame, fg_color="transparent")
+        title_box = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         title_box.pack(side="left", padx=20, pady=10)
 
         title_lbl = ctk.CTkLabel(
@@ -74,15 +76,31 @@ class GamePilotHUD(ctk.CTk):
 
         sub_lbl = ctk.CTkLabel(
             title_box,
-            text=" // TYPE-SAFE SYSTEM ONE GAMING AI",
+            text=" // UNIVERSAL GAMING AI",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#70758a",
         )
         sub_lbl.pack(side="left", padx=5)
 
-        # Status Badge
+        # Right side: Mini Mode Toggle & Status Badge
+        r_box = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+        r_box.pack(side="right", padx=15)
+
+        self.mini_mode_btn = ctk.CTkButton(
+            r_box,
+            text="🪟 Mini Floating HUD",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            width=140,
+            height=28,
+            fg_color="#1a1c26",
+            hover_color="#2b2f42",
+            text_color="#00ffcc",
+            command=self._toggle_mini_mode,
+        )
+        self.mini_mode_btn.pack(side="left", padx=(0, 10))
+
         self.status_badge = ctk.CTkLabel(
-            header_frame,
+            r_box,
             text="● SYSTEM STANDBY",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#70758a",
@@ -91,21 +109,21 @@ class GamePilotHUD(ctk.CTk):
             padx=15,
             pady=4,
         )
-        self.status_badge.pack(side="right", padx=20)
+        self.status_badge.pack(side="left")
 
     def _build_main_layout(self):
-        container = ctk.CTkFrame(self, fg_color="transparent")
-        container.pack(fill="both", expand=True, padx=15, pady=15)
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.pack(fill="both", expand=True, padx=15, pady=15)
 
-        # Left Column: Controls & Window Calibration (width: 340)
+        # Left Column: Profile Selector, Actions, Calibration, Start
         left_col = ctk.CTkFrame(
-            container, fg_color="#12131c", corner_radius=10, width=340
+            self.main_container, fg_color="#12131c", corner_radius=10, width=350
         )
         left_col.pack(side="left", fill="y", padx=(0, 10), pady=0)
         left_col.pack_propagate(False)
 
         # Right Column: Viewport & Jev Brain Telemetry
-        right_col = ctk.CTkFrame(container, fg_color="transparent")
+        right_col = ctk.CTkFrame(self.main_container, fg_color="transparent")
         right_col.pack(side="right", fill="both", expand=True, padx=0, pady=0)
 
         self._build_left_controls(left_col)
@@ -114,53 +132,60 @@ class GamePilotHUD(ctk.CTk):
     def _build_left_controls(self, parent):
         pad_x = 15
 
-        # 1. Game Mode Selector
+        # 1. Universal Game Profile Selector
         sec1_lbl = ctk.CTkLabel(
             parent,
-            text="GAME ADAPTER",
+            text="GAME PROFILE",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#00ffcc",
         )
-        sec1_lbl.pack(anchor="w", padx=pad_x, pady=(15, 5))
+        sec1_lbl.pack(anchor="w", padx=pad_x, pady=(12, 4))
 
-        self.mode_selector = ctk.CTkOptionMenu(
+        self.profile_selector = ctk.CTkOptionMenu(
             parent,
-            values=[
-                "Chrome Dino / Edge Surf",
-                "Subway Surfers (3-Lane)",
-                "Screen Chess Bot (FEN)",
-            ],
-            command=self._on_mode_change,
+            values=self._get_profile_dropdown_values(),
+            command=self._on_profile_selected,
             fg_color="#1a1c26",
             button_color="#2b2f42",
             button_hover_color="#00ffcc",
             text_color="#ffffff",
             dropdown_fg_color="#1a1c26",
         )
-        self.mode_selector.pack(fill="x", padx=pad_x, pady=(0, 8))
+        self.profile_selector.pack(fill="x", padx=pad_x, pady=(0, 6))
 
-        # Launch Offline Dino Browser Button
-        launch_dino_btn = ctk.CTkButton(
+        # Action Keys Preview Badge
+        self.actions_preview_lbl = ctk.CTkLabel(
             parent,
-            text="🌐 Open Dino in Browser",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="#202230",
-            hover_color="#2e3146",
-            text_color="#00ffcc",
-            command=self.open_offline_dino,
-            height=30,
+            text=self._format_actions_preview(self.core.current_profile),
+            font=ctk.CTkFont(size=10),
+            text_color="#70758a",
+            justify="left",
+            wraplength=310,
         )
-        launch_dino_btn.pack(fill="x", padx=pad_x, pady=(0, 12))
+        self.actions_preview_lbl.pack(anchor="w", padx=pad_x, pady=(0, 8))
+
+        # + Add Custom Profile Button
+        new_prof_btn = ctk.CTkButton(
+            parent,
+            text="➕ Create Custom Game Profile...",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#1a1c28",
+            hover_color="#282c40",
+            text_color="#00ffcc",
+            command=self._open_new_profile_dialog,
+            height=28,
+        )
+        new_prof_btn.pack(fill="x", padx=pad_x, pady=(0, 10))
 
         # Separator
         ctk.CTkFrame(parent, height=1, fg_color="#1f2230").pack(
-            fill="x", padx=pad_x, pady=4
+            fill="x", padx=pad_x, pady=3
         )
 
-        # 2. Window Calibration & Snapping
+        # 2. Player Avatar Calibration & Screen Snapping
         sec2_lbl = ctk.CTkLabel(
             parent,
-            text="EXTERNAL SCREEN CAPTURE",
+            text="SCREEN & AVATAR CALIBRATION",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#00ffcc",
         )
@@ -175,7 +200,7 @@ class GamePilotHUD(ctk.CTk):
             fg_color="#1a1c26",
             button_color="#2b2f42",
             dropdown_fg_color="#1a1c26",
-            width=210,
+            width=220,
         )
         self.window_dropdown.pack(
             side="left", fill="x", expand=True, padx=(0, 5)
@@ -204,17 +229,45 @@ class GamePilotHUD(ctk.CTk):
         )
         snap_btn.pack(fill="x", padx=pad_x, pady=(0, 6))
 
+        # Player Avatar Calibrator Row
+        calib_row = ctk.CTkFrame(parent, fg_color="transparent")
+        calib_row.pack(fill="x", padx=pad_x, pady=(0, 6))
+
+        self.calib_btn = ctk.CTkButton(
+            calib_row,
+            text="📌 Calibrate Player Avatar",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#1f2232",
+            hover_color="#2c3044",
+            text_color="#00d26a",
+            height=26,
+            command=self._calibrate_player_avatar,
+        )
+        self.calib_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        clear_calib_btn = ctk.CTkButton(
+            calib_row,
+            text="✕",
+            width=26,
+            height=26,
+            fg_color="#1f2232",
+            hover_color="#ff2a55",
+            text_color="#ff2a55",
+            command=self._clear_player_calibration,
+        )
+        clear_calib_btn.pack(side="right")
+
         self.coords_lbl = ctk.CTkLabel(
             parent,
             text="Region: Auto Center (800x400)",
             font=ctk.CTkFont(size=10),
             text_color="#70758a",
         )
-        self.coords_lbl.pack(anchor="w", padx=pad_x, pady=(0, 10))
+        self.coords_lbl.pack(anchor="w", padx=pad_x, pady=(0, 8))
 
         # Separator
         ctk.CTkFrame(parent, height=1, fg_color="#1f2230").pack(
-            fill="x", padx=pad_x, pady=4
+            fill="x", padx=pad_x, pady=3
         )
 
         # 3. Action Buttons & Start Configuration
@@ -227,7 +280,7 @@ class GamePilotHUD(ctk.CTk):
         sec3_lbl.pack(anchor="w", padx=pad_x, pady=(8, 4))
 
         opt_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        opt_frame.pack(fill="x", padx=pad_x, pady=(0, 8))
+        opt_frame.pack(fill="x", padx=pad_x, pady=(0, 6))
 
         self.delay_switch = ctk.CTkSwitch(
             opt_frame,
@@ -236,14 +289,14 @@ class GamePilotHUD(ctk.CTk):
             text_color="#c0c0c0",
             progress_color="#00ffcc",
         )
-        self.delay_switch.deselect()  # Default off for instant native play!
+        self.delay_switch.deselect()
         self.delay_switch.pack(side="left")
 
         self.hotkey_selector = ctk.CTkOptionMenu(
             opt_frame,
             values=["No Hotkey (Click Only)", "Enter", "F2", "Tab", "F8"],
             font=ctk.CTkFont(size=10),
-            width=130,
+            width=135,
             height=24,
             fg_color="#1a1c26",
             button_color="#2b2f42",
@@ -260,46 +313,45 @@ class GamePilotHUD(ctk.CTk):
             fg_color="#00d26a",
             hover_color="#00b058",
             text_color="#000000",
-            height=50,
+            height=48,
             command=lambda: self.toggle_pilot(armed=True),
         )
-        self.arm_btn.pack(fill="x", padx=pad_x, pady=(0, 8))
+        self.arm_btn.pack(fill="x", padx=pad_x, pady=(0, 6))
 
-        # Reset Game Button
+        # Reset / Replay Button
         self.reset_btn = ctk.CTkButton(
             parent,
             text="🔄 Reset Game Arena",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=11, weight="bold"),
             fg_color="#1f2230",
             hover_color="#2e3146",
             text_color="#ffffff",
-            height=32,
+            height=28,
             command=self._on_reset_game,
         )
-        self.reset_btn.pack(fill="x", padx=pad_x, pady=(0, 8))
+        self.reset_btn.pack(fill="x", padx=pad_x, pady=(0, 6))
 
         # Big Red Emergency Stop Button
         self.stop_btn = ctk.CTkButton(
             parent,
             text="🛑 STOP / HALT [ESC]",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(size=12, weight="bold"),
             fg_color="#ff2a55",
             hover_color="#d61f43",
             text_color="#ffffff",
-            height=42,
+            height=38,
             command=self.emergency_stop,
         )
-        self.stop_btn.pack(fill="x", padx=pad_x, pady=(0, 10))
+        self.stop_btn.pack(fill="x", padx=pad_x, pady=(0, 8))
 
-        # Failsafe Notice
         notice_lbl = ctk.CTkLabel(
             parent,
-            text="💡 Tip: Click inside the game arena to play\nmanually anytime (SPACE=Jump, DOWN=Duck)!",
+            text="💡 Tip: Works on ANY game! Switch profiles or\ncreate custom ones for Roblox, Subway, etc.",
             font=ctk.CTkFont(size=10),
             text_color="#70758a",
             justify="center",
         )
-        notice_lbl.pack(fill="x", padx=pad_x, pady=(2, 6))
+        notice_lbl.pack(fill="x", padx=pad_x, pady=(2, 4))
 
     def _build_right_viewport(self, parent):
         # 1. Viewport Card
@@ -308,16 +360,14 @@ class GamePilotHUD(ctk.CTk):
         )
         viewport_card.pack(fill="both", expand=True, padx=0, pady=(0, 10))
 
-        # Top Bar of Viewport
         vp_top = ctk.CTkFrame(viewport_card, fg_color="transparent", height=38)
         vp_top.pack(fill="x", padx=15, pady=(10, 5))
 
-        # Segmented Button to switch between Native Arena and External Screen Grabber
         self.arena_tab = ctk.CTkSegmentedButton(
             vp_top,
             values=[
                 "🎮 Native Dino Arena (Instant Play)",
-                "🖥️ External Screen Grabber (Chrome/Edge)",
+                "🖥️ Universal Screen Grabber (Any Game)",
             ],
             command=self._on_arena_tab_changed,
             fg_color="#1a1c26",
@@ -339,7 +389,6 @@ class GamePilotHUD(ctk.CTk):
         )
         self.fps_lbl.pack(side="right")
 
-        # Viewport Content Container
         self.content_container = ctk.CTkFrame(
             viewport_card, fg_color="#08090d", corner_radius=6
         )
@@ -347,17 +396,17 @@ class GamePilotHUD(ctk.CTk):
             fill="both", expand=True, padx=15, pady=(0, 15)
         )
 
-        # Tab 1: Embedded Native Dino Arena
+        # Native Dino Arena Canvas
         self.embedded_arena = EmbeddedDinoArena(
             self.content_container, width=740, height=270
         )
         self.embedded_arena.pack(fill="both", expand=True, padx=10, pady=10)
         self.embedded_arena.start()
 
-        # Tab 2: External Screen Video Label (initially hidden)
+        # External Universal Video Label (for ANY game)
         self.video_lbl = ctk.CTkLabel(
             self.content_container,
-            text="[ External Screen Viewport Offline // Click 'Snap Window' then 'Start Autopilot' ]",
+            text="[ Universal Screen Grabber Offline // Click 'Focus & Snap Window' then 'Start Autopilot' ]",
             font=ctk.CTkFont(size=13),
             text_color="#53586d",
         )
@@ -389,8 +438,8 @@ class GamePilotHUD(ctk.CTk):
 
         self.action_badge = ctk.CTkLabel(
             col1,
-            text="RUN NORMAL",
-            font=ctk.CTkFont(size=18, weight="bold"),
+            text="WAIT / STANDBY",
+            font=ctk.CTkFont(size=17, weight="bold"),
             text_color="#00ffcc",
             fg_color="#12131c",
             corner_radius=6,
@@ -400,7 +449,7 @@ class GamePilotHUD(ctk.CTk):
 
         urg_title = ctk.CTkLabel(
             col1,
-            text="THREAT URGENCY",
+            text="THREAT / URGENCY GAUGE",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color="#70758a",
         )
@@ -429,7 +478,7 @@ class GamePilotHUD(ctk.CTk):
 
         self.score_lbl = ctk.CTkLabel(
             grid_inner,
-            text="Score: 00000 | High: 00000",
+            text="Profile: 🦖 Chrome Dino",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color="#00ffcc",
         )
@@ -437,7 +486,7 @@ class GamePilotHUD(ctk.CTk):
 
         self.obs_lbl = ctk.CTkLabel(
             grid_inner,
-            text="Obstacle: None Detected",
+            text="Threat / Target: None Detected",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#e0e0e0",
         )
@@ -453,13 +502,13 @@ class GamePilotHUD(ctk.CTk):
 
         self.speed_lbl = ctk.CTkLabel(
             grid_inner,
-            text="Game Velocity: 360.0 px/sec",
+            text="Tracking: Auto Contour / Template",
             font=ctk.CTkFont(size=11),
             text_color="#70758a",
         )
         self.speed_lbl.pack(anchor="w", pady=1)
 
-        # Col 3: Jev Brain Reasoning & Counters
+        # Col 3: Jev Brain Intuition & Counters
         col3 = ctk.CTkFrame(
             deck_grid, fg_color="#1a1c26", corner_radius=8, width=230
         )
@@ -476,7 +525,7 @@ class GamePilotHUD(ctk.CTk):
 
         self.brain_source_lbl = ctk.CTkLabel(
             col3,
-            text="Model: jev-latest (System One)",
+            text="Model: JEV-LATEST",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#00ffcc",
         )
@@ -484,7 +533,7 @@ class GamePilotHUD(ctk.CTk):
 
         self.counters_lbl = ctk.CTkLabel(
             col3,
-            text="Total Maneuvers:\nJumps: 0  |  Ducks: 0",
+            text="Total Maneuvers:\nActions: 0",
             font=ctk.CTkFont(size=11),
             text_color="#e0e0e0",
             justify="left",
@@ -493,11 +542,165 @@ class GamePilotHUD(ctk.CTk):
 
         self.fast_fall_lbl = ctk.CTkLabel(
             col3,
-            text="Fast-Fall Ready: YES",
+            text="Universal Schema: ACTIVE",
             font=ctk.CTkFont(size=10),
             text_color="#00d26a",
         )
         self.fast_fall_lbl.pack(anchor="w", padx=12)
+
+    def _build_mini_layout(self):
+        """Compact floating bar layout for playing full screen games."""
+        self.mini_container = ctk.CTkFrame(self, fg_color="#0e1017")
+
+        row = ctk.CTkFrame(self.mini_container, fg_color="transparent")
+        row.pack(fill="both", expand=True, padx=10, pady=8)
+
+        # Profile & Action
+        info_col = ctk.CTkFrame(row, fg_color="transparent")
+        info_col.pack(side="left", fill="both", expand=True)
+
+        self.mini_profile_lbl = ctk.CTkLabel(
+            info_col,
+            text="⚡ JEV-GAMEPILOT",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#00ffcc",
+        )
+        self.mini_profile_lbl.pack(anchor="w")
+
+        self.mini_action_badge = ctk.CTkLabel(
+            info_col,
+            text="STANDBY",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#ffffff",
+        )
+        self.mini_action_badge.pack(anchor="w")
+
+        self.mini_urgency_bar = ctk.CTkProgressBar(
+            info_col, height=6, fg_color="#1a1c26", progress_color="#00ffcc"
+        )
+        self.mini_urgency_bar.set(0.0)
+        self.mini_urgency_bar.pack(fill="x", pady=(2, 0))
+
+        # Controls
+        ctrl_col = ctk.CTkFrame(row, fg_color="transparent")
+        ctrl_col.pack(side="right", padx=(10, 0))
+
+        self.mini_arm_btn = ctk.CTkButton(
+            ctrl_col,
+            text="▶ START",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#00d26a",
+            hover_color="#00b058",
+            text_color="#000000",
+            width=70,
+            height=30,
+            command=lambda: self.toggle_pilot(armed=True),
+        )
+        self.mini_arm_btn.pack(side="top", pady=(0, 4))
+
+        expand_btn = ctk.CTkButton(
+            ctrl_col,
+            text="🔲 Expand",
+            font=ctk.CTkFont(size=10),
+            fg_color="#1a1c26",
+            hover_color="#2b2f42",
+            width=70,
+            height=24,
+            command=self._toggle_mini_mode,
+        )
+        expand_btn.pack(side="top")
+
+    def _toggle_mini_mode(self):
+        if not self.is_mini_mode:
+            # Switch to Mini Floating Bar
+            self.is_mini_mode = True
+            self.main_container.pack_forget()
+            self.header_frame.pack_forget()
+            self.mini_container.pack(fill="both", expand=True)
+            self.geometry("380x105")
+            self.attributes("-topmost", True)
+        else:
+            # Switch to Full HUD
+            self.is_mini_mode = False
+            self.mini_container.pack_forget()
+            self.header_frame.pack(fill="x", side="top")
+            self.main_container.pack(fill="both", expand=True, padx=15, pady=15)
+            self.geometry("1160x760")
+            self.attributes("-topmost", False)
+
+    def _get_profile_dropdown_values(self) -> list[str]:
+        names = [p.name for p in self.core.profile_mgr.list_profiles()]
+        names.append("➕ Create Custom Game Profile...")
+        return names
+
+    def _format_actions_preview(self, profile: GameProfile) -> str:
+        keys_summary = " | ".join(
+            [f"{a.name}: {a.key.upper()}" for a in profile.actions[:4]]
+        )
+        return f"Control Map: {keys_summary}"
+
+    def _on_profile_selected(self, choice: str):
+        if "Create Custom" in choice:
+            self._open_new_profile_dialog()
+            return
+
+        # Find matching profile
+        for prof in self.core.profile_mgr.list_profiles():
+            if prof.name == choice:
+                self.core.set_profile(prof.id)
+                self.actions_preview_lbl.configure(
+                    text=self._format_actions_preview(prof)
+                )
+                self.score_lbl.configure(text=f"Profile: {prof.name}")
+
+                # If non-dino profile, switch automatically to Universal External Grabber
+                if prof.id != "runner_dino":
+                    self.arena_tab.set(
+                        "🖥️ Universal Screen Grabber (Any Game)"
+                    )
+                    self._on_arena_tab_changed("Universal")
+                    if prof.default_window_keyword:
+                        self.core.vision.snap_to_window(
+                            prof.default_window_keyword
+                        )
+                break
+
+    def _open_new_profile_dialog(self):
+        CustomProfileDialog(
+            self,
+            self.core.profile_mgr,
+            on_created_cb=self._on_custom_profile_created,
+        )
+
+    def _on_custom_profile_created(self, new_profile: GameProfile):
+        # Refresh dropdown values
+        self.profile_selector.configure(values=self._get_profile_dropdown_values())
+        self.profile_selector.set(new_profile.name)
+        self._on_profile_selected(new_profile.name)
+
+    def _calibrate_player_avatar(self):
+        """Grabs the current focal avatar to lock template tracking."""
+        frame = self.core.vision.last_frame
+        if frame is not None:
+            h, w, _ = frame.shape
+            # Take candidate player region from left-center
+            crop = frame[
+                int(h * 0.4) : int(h * 0.75), int(w * 0.1) : int(w * 0.35)
+            ]
+            self.core.set_player_template(crop)
+            self.calib_btn.configure(
+                text="✓ Avatar Calibrated", fg_color="#00b058"
+            )
+            self.speed_lbl.configure(text="Tracking: Locked Template (60 FPS)")
+        else:
+            self.calib_btn.configure(text="⚠️ Capture Frame First")
+
+    def _clear_player_calibration(self):
+        self.core.clear_player_template()
+        self.calib_btn.configure(
+            text="📌 Calibrate Player Avatar", fg_color="#1f2232"
+        )
+        self.speed_lbl.configure(text="Tracking: Auto Contour Dynamics")
 
     def _on_arena_tab_changed(self, choice: str):
         if "Native" in choice:
@@ -509,7 +712,7 @@ class GamePilotHUD(ctk.CTk):
             self.active_arena_mode = "external"
             self.embedded_arena.pack_forget()
             self.video_lbl.pack(fill="both", expand=True)
-            self.fps_lbl.configure(text="0.0 FPS // External Capture")
+            self.fps_lbl.configure(text="0.0 FPS // Universal Capture")
 
     def _on_reset_game(self):
         self.embedded_arena.reset_game()
@@ -547,6 +750,11 @@ class GamePilotHUD(ctk.CTk):
                     "surf",
                     "subway",
                     "bluestack",
+                    "roblox",
+                    "minecraft",
+                    "steam",
+                    "osu",
+                    "aim",
                 ]
             )
         ]
@@ -559,11 +767,11 @@ class GamePilotHUD(ctk.CTk):
 
     def _auto_detect_game_window(self):
         self._refresh_windows()
-        for keyword in ["dino", "t-rex", "edge", "chrome"]:
+        for keyword in ["dino", "t-rex", "edge", "chrome", "subway", "bluestack"]:
             if self.core.vision.snap_to_window(keyword):
                 reg = self.core.vision.region
                 self.coords_lbl.configure(
-                    text=f"Snapped to '{keyword}' ({reg['width']}x{reg['height']})"
+                    text=f"Snapped: '{keyword}' ({reg['width']}x{reg['height']})"
                 )
                 break
 
@@ -575,9 +783,9 @@ class GamePilotHUD(ctk.CTk):
                 self.coords_lbl.configure(
                     text=f"Snapped: {reg['left']},{reg['top']} ({reg['width']}x{reg['height']})"
                 )
-                # Automatically switch tab to External Screen Grabber
-                self.arena_tab.set("🖥️ External Screen Grabber (Chrome/Edge)")
-                self._on_arena_tab_changed("External")
+                # Switch tab to Universal Screen Grabber
+                self.arena_tab.set("🖥️ Universal Screen Grabber (Any Game)")
+                self._on_arena_tab_changed("Universal")
 
                 # Bring target window to foreground
                 try:
@@ -590,7 +798,7 @@ class GamePilotHUD(ctk.CTk):
                     ]
                     if wins:
                         w = wins[0]
-                        ctypes.windll.user32.ShowWindow(w._hWnd, 9)  # SW_RESTORE
+                        ctypes.windll.user32.ShowWindow(w._hWnd, 9)
                         ctypes.windll.user32.SetForegroundWindow(w._hWnd)
                 except Exception:
                     pass
@@ -598,19 +806,6 @@ class GamePilotHUD(ctk.CTk):
                 self.coords_lbl.configure(
                     text="Could not lock to window dimensions."
                 )
-
-    def _on_mode_change(self, mode: str):
-        if "Dino" in mode:
-            self.core.current_game_mode = "dino"
-        elif "Subway" in mode:
-            self.core.current_game_mode = "runner"
-
-    def open_offline_dino(self):
-        """Launches the built-in offline Dino HTML game in browser."""
-        dino_path = os.path.abspath("dino_game.html")
-        if os.path.exists(dino_path):
-            webbrowser.open(f"file:///{dino_path}")
-            self.after(1500, self._auto_detect_game_window)
 
     def toggle_pilot(self, armed: bool):
         if self.countdown_timer:
@@ -620,7 +815,6 @@ class GamePilotHUD(ctk.CTk):
             return
 
         if self.active_arena_mode == "native":
-            # Native Embedded Arena Mode
             if self.embedded_arena.autopilot_enabled:
                 self.embedded_arena.set_autopilot(False)
                 self._update_status_idle()
@@ -630,7 +824,6 @@ class GamePilotHUD(ctk.CTk):
                 else:
                     self._engage_native()
         else:
-            # External Screen Grabber Mode
             if self.core.is_running:
                 self.core.stop()
                 self._update_status_idle()
@@ -642,10 +835,9 @@ class GamePilotHUD(ctk.CTk):
 
     def _start_countdown(self, seconds_left: int, mode: str):
         if seconds_left > 0:
-            self.arm_btn.configure(
-                text=f"⏳ Starting in {seconds_left}s...\nGet ready!",
-                fg_color="#ff9900",
-            )
+            txt = f"⏳ Starting in {seconds_left}s...\nGet ready!"
+            self.arm_btn.configure(text=txt, fg_color="#ff9900")
+            self.mini_arm_btn.configure(text=f"⏳ {seconds_left}s", fg_color="#ff9900")
             self.status_badge.configure(
                 text=f"● COUNTDOWN {seconds_left}s",
                 text_color="#000000",
@@ -666,25 +858,26 @@ class GamePilotHUD(ctk.CTk):
             True, self.core.brain, self._on_embedded_telemetry
         )
         self.status_badge.configure(
-            text="● JEV AUTOPILOT PLAYING",
+            text="● NATIVE AUTOPILOT ACTIVE",
             text_color="#000000",
             fg_color="#00d26a",
         )
         self.arm_btn.configure(
             text="🛑 STOP AUTOPILOT\n(Click or press ESC)", fg_color="#ff2a55"
         )
+        self.mini_arm_btn.configure(text="🛑 STOP", fg_color="#ff2a55")
 
     def _engage_external(self):
         self.core.start(arm_inputs=True)
         self.status_badge.configure(
-            text="● EXTERNAL PILOT ARMED",
+            text=f"● AUTOPILOT: {self.core.current_profile.name[:18]}",
             text_color="#000000",
             fg_color="#00d26a",
         )
         self.arm_btn.configure(
-            text="🛑 STOP EXTERNAL PILOT\n(Click or press ESC)",
-            fg_color="#ff2a55",
+            text="🛑 STOP AUTOPILOT\n(Click or press ESC)", fg_color="#ff2a55"
         )
+        self.mini_arm_btn.configure(text="🛑 STOP", fg_color="#ff2a55")
 
     def emergency_stop(self):
         if self.countdown_timer:
@@ -708,13 +901,16 @@ class GamePilotHUD(ctk.CTk):
             text="🚀 START AUTOPILOT\n(Jev System One Play)",
             fg_color="#00d26a",
         )
+        self.mini_arm_btn.configure(text="▶ START", fg_color="#00d26a")
         self.action_badge.configure(
             text="STANDBY", text_color="#70758a", fg_color="#12131c"
         )
+        self.mini_action_badge.configure(text="STANDBY")
         self.urgency_bar.set(0.0)
+        self.mini_urgency_bar.set(0.0)
 
     def _on_embedded_telemetry(self, data: dict):
-        """Called directly from EmbeddedDinoArena loop."""
+        """Telemetry callback from embedded Dino arena."""
         state = data.get("state")
         decision = data.get("decision", {})
         score = data.get("score", 0)
@@ -726,32 +922,18 @@ class GamePilotHUD(ctk.CTk):
 
         act = decision.get("action", "run_normal").upper()
         self.action_badge.configure(text=act)
+        self.mini_action_badge.configure(text=act)
 
         if act == "JUMP":
-            self.action_badge.configure(
-                text_color="#ffffff", fg_color="#ff2a55"
-            )
+            self.action_badge.configure(text_color="#ffffff", fg_color="#ff2a55")
         elif act == "DUCK":
-            self.action_badge.configure(
-                text_color="#ffffff", fg_color="#ff9900"
-            )
-        elif act == "RESTART":
-            self.action_badge.configure(
-                text_color="#000000", fg_color="#00ffcc"
-            )
+            self.action_badge.configure(text_color="#ffffff", fg_color="#ff9900")
         else:
-            self.action_badge.configure(
-                text_color="#00ffcc", fg_color="#12131c"
-            )
+            self.action_badge.configure(text_color="#00ffcc", fg_color="#12131c")
 
         urg = float(decision.get("threat_score", 0.0))
         self.urgency_bar.set(urg)
-        if urg > 0.7:
-            self.urgency_bar.configure(progress_color="#ff2a55")
-        elif urg > 0.3:
-            self.urgency_bar.configure(progress_color="#ff9900")
-        else:
-            self.urgency_bar.configure(progress_color="#00ffcc")
+        self.mini_urgency_bar.set(urg)
 
         self.urgency_pct.configure(
             text=f"{int(urg * 100)}% ({'CRITICAL THREAT' if urg > 0.75 else 'Approaching' if urg > 0.2 else 'Clear'})"
@@ -759,7 +941,7 @@ class GamePilotHUD(ctk.CTk):
 
         if state and state.nearest_obstacle:
             obs = state.nearest_obstacle
-            self.obs_lbl.configure(text=f"Obstacle: {obs.obstacle_type.upper()}")
+            self.obs_lbl.configure(text=f"Threat: {obs.obstacle_type.upper()}")
             self.dist_lbl.configure(
                 text=f"Distance: {obs.distance_from_dino}px | Impact: {int(obs.time_to_impact_ms)}ms"
             )
@@ -767,28 +949,19 @@ class GamePilotHUD(ctk.CTk):
             self.obs_lbl.configure(text="Obstacle: Horizon Clear")
             self.dist_lbl.configure(text="Distance / Impact: -- px (-- ms)")
 
-        if state:
-            self.speed_lbl.configure(
-                text=f"Game Velocity: {round(state.game_speed_px_sec, 1)} px/sec"
-            )
-
         jumps = data.get("jumps", 0)
         ducks = data.get("ducks", 0)
         self.counters_lbl.configure(
             text=f"Total Maneuvers:\nJumps: {jumps}  |  Ducks: {ducks}"
         )
 
-        self.brain_source_lbl.configure(
-            text="Model: JEV-LATEST (Reflex Active)"
-        )
-
     def _on_telemetry_update(self, data: dict):
-        """Called from PilotCore loop for external screen capture."""
+        """Telemetry callback from universal pilot core."""
         self.after(0, self._render_telemetry_ui, data)
 
     def _render_telemetry_ui(self, data: dict):
         self.fps_lbl.configure(
-            text=f"{data['fps']} FPS // External Screen Capture"
+            text=f"{data['fps']} FPS // Universal Vision Active"
         )
 
         frame = data.get("frame")
@@ -812,61 +985,41 @@ class GamePilotHUD(ctk.CTk):
 
         state = data.get("state")
         decision = data.get("decision", {})
+        prof = data.get("profile", self.core.current_profile)
 
-        if state:
-            act = decision.get("action", "run_normal").upper()
-            self.action_badge.configure(text=act)
+        act = decision.get("action", "wait").upper()
+        self.action_badge.configure(text=act)
+        self.mini_action_badge.configure(text=act)
 
-            if act == "JUMP":
-                self.action_badge.configure(
-                    text_color="#ffffff", fg_color="#ff2a55"
-                )
-            elif act == "DUCK":
-                self.action_badge.configure(
-                    text_color="#ffffff", fg_color="#ff9900"
-                )
-            elif act == "RESTART":
-                self.action_badge.configure(
-                    text_color="#000000", fg_color="#00ffcc"
-                )
-            else:
-                self.action_badge.configure(
-                    text_color="#00ffcc", fg_color="#12131c"
-                )
+        urg = float(decision.get("threat_score", 0.0))
+        self.urgency_bar.set(urg)
+        self.mini_urgency_bar.set(urg)
+        self.urgency_pct.configure(text=f"{int(urg * 100)}% Threat Urgency")
 
-            urg = float(decision.get("threat_score", state.action_urgency))
-            self.urgency_bar.set(urg)
-            if urg > 0.7:
-                self.urgency_bar.configure(progress_color="#ff2a55")
-            elif urg > 0.3:
-                self.urgency_bar.configure(progress_color="#ff9900")
-            else:
-                self.urgency_bar.configure(progress_color="#00ffcc")
-
-            self.urgency_pct.configure(
-                text=f"{int(urg * 100)}% ({'CRITICAL THREAT' if urg > 0.75 else 'Approaching' if urg > 0.2 else 'Clear'})"
+        # Telemetry fields for UniversalSceneState
+        if hasattr(state, "threats") and state.threats:
+            t = state.threats[0]
+            self.obs_lbl.configure(text=f"Threat: {int(t.distance_to_player)}px away")
+            self.dist_lbl.configure(
+                text=f"Threat Box: ({t.x}, {t.y}) {t.w}x{t.h}px"
             )
-
-            if state.nearest_obstacle:
-                obs = state.nearest_obstacle
-                self.obs_lbl.configure(
-                    text=f"Obstacle: {obs.obstacle_type.upper()}"
-                )
-                self.dist_lbl.configure(
-                    text=f"Distance: {obs.distance_from_dino}px | Impact: {int(obs.time_to_impact_ms)}ms"
-                )
-            else:
-                self.obs_lbl.configure(text="Obstacle: Horizon Clear")
-                self.dist_lbl.configure(text="Distance / Impact: -- px (-- ms)")
-
-            self.speed_lbl.configure(
-                text=f"Game Velocity: {round(state.game_speed_px_sec, 1)} px/sec"
+        elif hasattr(state, "targets") and state.targets:
+            tgt = state.targets[0]
+            self.obs_lbl.configure(text=f"Target: ({tgt.click_x}, {tgt.click_y})")
+            self.dist_lbl.configure(text="Aim Lock: Active")
+        elif hasattr(state, "nearest_obstacle") and state.nearest_obstacle:
+            obs = state.nearest_obstacle
+            self.obs_lbl.configure(text=f"Obstacle: {obs.obstacle_type.upper()}")
+            self.dist_lbl.configure(
+                text=f"Distance: {obs.distance_from_dino}px | Impact: {int(obs.time_to_impact_ms)}ms"
             )
+        else:
+            self.obs_lbl.configure(text="Horizon / Target: Clear")
+            self.dist_lbl.configure(text="Distance / Impact: --")
 
-        jumps = data.get("jumps", 0)
-        ducks = data.get("ducks", 0)
+        actions_c = data.get("actions_count", 0)
         self.counters_lbl.configure(
-            text=f"Total Maneuvers:\nJumps: {jumps}  |  Ducks: {ducks}"
+            text=f"Total Actions: {actions_c}\nMode: {prof.category.upper()}"
         )
 
 
