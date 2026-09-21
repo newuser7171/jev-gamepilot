@@ -196,6 +196,8 @@ class PhoneGamePilot:
                     max_idle = 1.10  # Active slide/jump to maintain momentum
                 elif "clash" in self.profile.id:
                     max_idle = 2.20  # Elixir pacing
+                elif "solitaire" in self.profile.id:
+                    max_idle = 0.95  # Fast continuous puzzle cadence
                 elif "card" in self.profile.id:
                     max_idle = 3.50  # Card battle turn pacing
                 else:
@@ -220,6 +222,16 @@ class PhoneGamePilot:
                         elif "fifa" in self.profile.id:
                             fifa_rot = ["dribble_forward", "sprint_tackle", "pass", "through_pass"]
                             action_name = fifa_rot[self.total_actions % len(fifa_rot)]
+                        elif "solitaire" in self.profile.id:
+                            sol_rot = [
+                                "tap_waste_card",
+                                "tap_col_1", "tap_col_2", "tap_col_3",
+                                "tap_col_4", "tap_col_5", "tap_col_6", "tap_col_7",
+                                "drag_column_transfer",
+                                "draw_stock",
+                                "auto_complete",
+                            ]
+                            action_name = sol_rot[self.total_actions % len(sol_rot)]
                         elif "card" in self.profile.id:
                             card_rot = ["play_card_center", "play_card_left", "play_card_right", "attack_face", "end_turn"]
                             action_name = card_rot[self.total_actions % len(card_rot)]
@@ -236,6 +248,8 @@ class PhoneGamePilot:
                     cooldown = 1.3
                 elif "card" in self.profile.id:
                     cooldown = 0.85
+                elif "solitaire" in self.profile.id:
+                    cooldown = 0.32
                 elif "solar" in self.profile.id:
                     cooldown = 0.45
                 elif "earntodie" in self.profile.id:

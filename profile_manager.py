@@ -599,6 +599,71 @@ DEFAULT_PROFILES: List[GameProfile] = [
             ),
         ],
     ),
+    GameProfile(
+        id="mobile_solitaire",
+        name="♠️ Solitaire & Classic Card Puzzles",
+        category="strategy",
+        description="Autonomous pilot for Klondike, Spider, and FreeCell Solitaire: scans tableau columns, auto-moves cards to foundations, draws from stock, and executes column transfers",
+        default_window_keyword="solitaire",
+        scan_direction="omnidirectional",
+        auto_restart_key="space",
+        is_builtin=True,
+        actions=[
+            GameAction(
+                name="tap_tableau_column",
+                key="mouse_left",
+                description="Tap exposed card of tableau column to trigger auto-move to foundation or build sequence",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="draw_stock",
+                key="mouse_left",
+                description="Tap stock deck in top corner to deal fresh cards to waste pile",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="tap_waste_card",
+                key="mouse_left",
+                description="Tap waste pile card to auto-move to foundation or build onto tableau",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="drag_column_transfer",
+                key="mouse_left",
+                description="Drag card sequence from one tableau column to another valid destination column",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="auto_complete",
+                key="mouse_left",
+                description="Tap Auto-Finish / Auto-Complete button when all cards are face-up",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="sweep_all_columns",
+                key="mouse_left",
+                description="Execute rapid multi-column sweep across all 7 tableau columns",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="tap_foundation",
+                key="mouse_left",
+                description="Tap foundation piles (Aces to Kings) to retrieve or verify sequence",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="new_deal",
+                key="mouse_left",
+                description="Start a new deal or restart when game ends",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="wait",
+                key="none",
+                description="Pause for card animation or deal completion",
+            ),
+        ],
+    ),
 ]
 
 

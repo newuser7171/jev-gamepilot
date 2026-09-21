@@ -52,7 +52,14 @@ PACKAGE_PROFILE_MAP = {
     "com.humble.SlayTheSpire": "mobile_card_battler",
     "com.localthunk.balatro": "mobile_card_battler",
     "com.mattel163.uno": "mobile_card_battler",
-    "com.mobilityware.solitaire": "mobile_card_battler",
+    # Solitaire & Card Puzzles
+    "com.mobilityware.solitaire": "mobile_solitaire",
+    "com.pie.solitaire": "mobile_solitaire",
+    "com.microsoft.solitaire.collection": "mobile_solitaire",
+    "com.brainium.solitaire": "mobile_solitaire",
+    "com.tripledot.solitaire": "mobile_solitaire",
+    "com.zynga.solitaire": "mobile_solitaire",
+    "com.me2star.solitaire": "mobile_solitaire",
 }
 
 
@@ -166,6 +173,14 @@ class AdbController:
         elif "bitlife" in pkg_lower or "life" in pkg_lower or "sim" in pkg_lower or "choice" in pkg_lower:
             return "mobile_bitlife", pkg
         elif (
+            "solitaire" in pkg_lower
+            or "klondike" in pkg_lower
+            or "spider" in pkg_lower
+            or "freecell" in pkg_lower
+            or "patience" in pkg_lower
+        ):
+            return "mobile_solitaire", pkg
+        elif (
             "snap" in pkg_lower
             or "card" in pkg_lower
             or "tcg" in pkg_lower
@@ -177,7 +192,6 @@ class AdbController:
             or "spire" in pkg_lower
             or "balatro" in pkg_lower
             or "uno" in pkg_lower
-            or "solitaire" in pkg_lower
             or "poker" in pkg_lower
         ):
             return "mobile_card_battler", pkg
@@ -470,6 +484,84 @@ class AdbController:
             ty = int(self.screen_height * 0.28)
             self.swipe(fx, fy, tx, ty, duration_ms=200)
 
+    def tap_solitaire_stock(self):
+        """Taps top stock pile to deal next card(s)."""
+        if self.is_landscape:
+            sx = int(self.screen_width * 0.08)
+            sy = int(self.screen_height * 0.20)
+        else:
+            sx = int(self.screen_width * 0.12)
+            sy = int(self.screen_height * 0.125)
+        self.tap(sx, sy)
+
+    def tap_solitaire_waste(self):
+        """Taps waste pile card to auto-move to foundation or build onto tableau."""
+        if self.is_landscape:
+            wx = int(self.screen_width * 0.08)
+            wy = int(self.screen_height * 0.45)
+        else:
+            wx = int(self.screen_width * 0.25)
+            wy = int(self.screen_height * 0.125)
+        self.tap(wx, wy)
+
+    def tap_solitaire_column(self, col_idx: int = 0, y_ratio: float = 0.55):
+        """
+        Taps exposed card in tableau column (0-6).
+        Mobile solitaire has built-in tap-to-move which automatically sends valid cards to foundations or tableau!
+        """
+        col_idx = max(0, min(6, col_idx))
+        if self.is_landscape:
+            col_ratios = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+            cx = int(self.screen_width * col_ratios[col_idx])
+            cy = int(self.screen_height * y_ratio)
+        else:
+            col_ratios = [0.10, 0.23, 0.37, 0.50, 0.63, 0.77, 0.90]
+            cx = int(self.screen_width * col_ratios[col_idx])
+            cy = int(self.screen_height * y_ratio)
+        self.tap(cx, cy)
+
+    def drag_solitaire_transfer(self, from_col: int = 0, to_col: int = 1):
+        """Drags card/sequence between two tableau columns."""
+        from_col = max(0, min(6, from_col))
+        to_col = max(0, min(6, to_col))
+        if self.is_landscape:
+            col_ratios = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+            fx = int(self.screen_width * col_ratios[from_col])
+            tx = int(self.screen_width * col_ratios[to_col])
+            y = int(self.screen_height * 0.55)
+        else:
+            col_ratios = [0.10, 0.23, 0.37, 0.50, 0.63, 0.77, 0.90]
+            fx = int(self.screen_width * col_ratios[from_col])
+            tx = int(self.screen_width * col_ratios[to_col])
+            y = int(self.screen_height * 0.55)
+        self.swipe(fx, y, tx, y, duration_ms=220)
+
+    def tap_solitaire_foundation(self, found_idx: int = 0):
+        """Taps one of the 4 foundation piles (Aces to Kings)."""
+        found_idx = max(0, min(3, found_idx))
+        if self.is_landscape:
+            fx = int(self.screen_width * 0.92)
+            y_ratios = [0.18, 0.38, 0.58, 0.78]
+            fy = int(self.screen_height * y_ratios[found_idx])
+        else:
+            x_ratios = [0.53, 0.66, 0.79, 0.92]
+            fx = int(self.screen_width * x_ratios[found_idx])
+            fy = int(self.screen_height * 0.125)
+        self.tap(fx, fy)
+
+    def sweep_solitaire_tableau(self):
+        """
+        Executes a swift, chained multi-tap sweep across all 7 tableau columns.
+        Triggers instant cascade of available auto-moves!
+        """
+        if self.is_landscape:
+            col_ratios = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+            pts = [(int(self.screen_width * r), int(self.screen_height * 0.55)) for r in col_ratios]
+        else:
+            col_ratios = [0.10, 0.23, 0.37, 0.50, 0.63, 0.77, 0.90]
+            pts = [(int(self.screen_width * r), int(self.screen_height * 0.55)) for r in col_ratios]
+        self.chained_taps(pts, delay_sec=0.06)
+
     def trigger_auto_restart(self):
         """Taps the center or lower-center screen to dismiss Game Over / Play Again dialogs."""
         cx = self.screen_width // 2
@@ -746,7 +838,46 @@ class AdbController:
             cy = int(self.screen_height * (0.80 if self.is_landscape else 0.88))
             self.tap(cx, cy)
 
-        # 11. Precision target clicker
+        # 11. Solitaire & Classic Card Puzzles (Klondike, Spider, FreeCell)
+        elif "draw_stock" in act or "stock" in act:
+            self.tap_solitaire_stock()
+        elif "tap_waste_card" in act or "waste" in act:
+            self.tap_solitaire_waste()
+        elif "sweep_all_columns" in act or "sweep_tableau" in act:
+            self.sweep_solitaire_tableau()
+        elif "tap_tableau_column" in act or "tap_col" in act:
+            # Check if specific column 1-7 requested
+            col_match = re.search(r"col[_\s]?(\d+)", act)
+            if col_match:
+                col_idx = int(col_match.group(1)) - 1
+            else:
+                self._solitaire_col_idx = (getattr(self, "_solitaire_col_idx", 0) + 1) % 7
+                col_idx = self._solitaire_col_idx
+
+            if target_coords:
+                self.tap(target_coords[0], target_coords[1])
+            else:
+                self.tap_solitaire_column(col_idx, y_ratio=0.55)
+        elif "drag_column_transfer" in act or "column_transfer" in act:
+            self._sol_xfer_step = (getattr(self, "_sol_xfer_step", 0) + 1) % 6
+            # Try transferring between adjacent or valid columns
+            from_c = self._sol_xfer_step
+            to_c = (self._sol_xfer_step + 1) % 7
+            self.drag_solitaire_transfer(from_col=from_c, to_col=to_c)
+        elif "auto_complete" in act or "auto_finish" in act:
+            # Tap prominent Auto-Complete button or center victory banner
+            cx = self.screen_width // 2
+            cy = int(self.screen_height * (0.86 if not self.is_landscape else 0.88))
+            self.tap(cx, cy)
+            time.sleep(0.04)
+            self.tap(cx, int(self.screen_height * 0.80))
+        elif "tap_foundation" in act or "foundation" in act:
+            self._solitaire_found_idx = (getattr(self, "_solitaire_found_idx", 0) + 1) % 4
+            self.tap_solitaire_foundation(self._solitaire_found_idx)
+        elif "new_deal" in act or "new_game" in act:
+            self.trigger_auto_restart()
+
+        # 12. Precision target clicker
         elif "click" in act or "target" in act:
             if target_coords:
                 self.tap(target_coords[0], target_coords[1])
@@ -755,6 +886,6 @@ class AdbController:
                 cy = self.screen_height // 2
                 self.tap(cx, cy)
 
-        # 12. Auto-revive / restart / continue
+        # 13. Auto-revive / restart / continue
         elif "restart" in act or "revive" in act or "continue" in act:
             self.trigger_auto_restart()

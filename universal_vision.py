@@ -304,6 +304,29 @@ class UniversalVision:
                 scene.nearest_threat = None
                 scene.threat_urgency = 0.0
 
+        elif profile.id == "mobile_solitaire":
+            # Specialized Solitaire Perception: detect Auto-Complete / Finish banner in lower region
+            btn_region = frame_bgr[int(h * 0.78) : int(h * 0.90), int(w * 0.20) : int(w * 0.80)]
+            green_auto = (btn_region[:, :, 1] > 175) & (btn_region[:, :, 0] < 125) & (btn_region[:, :, 2] < 125)
+            blue_auto = (btn_region[:, :, 0] > 175) & (btn_region[:, :, 2] < 125)
+            if green_auto.sum() > 350 or blue_auto.sum() > 350:
+                scene.game_phase = "solvable"
+                scene.recommended_action = "auto_complete"
+                auto_target = UniversalEntity(
+                    x=int(w * 0.50) - 80,
+                    y=int(h * 0.84) - 30,
+                    w=160,
+                    h=60,
+                    entity_type="target",
+                    confidence=0.98,
+                    click_x=int(w * 0.50),
+                    click_y=int(h * 0.84),
+                )
+                scene.best_target = auto_target
+                scene.targets = [auto_target]
+            else:
+                scene.game_phase = "playing"
+
         self.last_frame_gray = gray
         return scene
 
