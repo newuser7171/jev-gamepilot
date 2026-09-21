@@ -602,13 +602,15 @@ class UniversalBrain:
                 "target_coords": None,
             }
 
-        # 4. EA Sports FC / FIFA Mobile
+        # 4. EA Sports FC / FIFA Mobile (Landscape)
         if profile.id == "mobile_fifa":
             self._fifa_step = getattr(self, "_fifa_step", 0) + 1
             if scene.threat_urgency > 0.65 or len(scene.threats) > 0:
                 act = "sprint_tackle"
-            elif self._fifa_step % 6 == 0:
+            elif self._fifa_step % 7 == 0:
                 act = "shoot_goal"
+            elif self._fifa_step % 5 == 0:
+                act = "dribble_forward"
             elif self._fifa_step % 3 == 0:
                 act = "through_pass"
             elif self._fifa_step % 2 == 0:

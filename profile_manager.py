@@ -388,6 +388,12 @@ DEFAULT_PROFILES: List[GameProfile] = [
                 duration_sec=0.18,
             ),
             GameAction(
+                name="dribble_forward",
+                key="right",
+                description="Engage virtual joystick forward to advance down the wing towards enemy goal",
+                duration_sec=0.25,
+            ),
+            GameAction(
                 name="maintain_course",
                 key="none",
                 description="Dribble forward in open space",

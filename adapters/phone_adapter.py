@@ -61,6 +61,7 @@ class AdbController:
         self.device_serial = device_serial
         self.screen_width = 1080
         self.screen_height = 2400
+        self.is_landscape = False
         self.is_connected = False
 
         self._latest_frame: Optional[np.ndarray] = None
@@ -154,17 +155,49 @@ class AdbController:
 
         return "mobile_universal", pkg
 
+    def _sync_screen_dimensions(self, frame: np.ndarray):
+        """Dynamically syncs logical touch coordinate boundaries to active video frame orientation."""
+        fh, fw = frame.shape[:2]
+        if fw != self.screen_width or fh != self.screen_height:
+            self.screen_width = fw
+            self.screen_height = fh
+            self.is_landscape = (fw > fh)
+
     def query_screen_size(self) -> Tuple[int, int]:
-        """Queries physical display resolution via adb shell wm size."""
+        """Queries active display resolution and orientation via dumpsys display & wm size."""
         try:
-            cmd = self._cmd_prefix() + ["shell", "wm", "size"]
+            # 1. Inspect active override display info (reports real logical dimensions in landscape/portrait)
+            cmd = self._cmd_prefix() + ["shell", "dumpsys", "display"]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
-            for line in res.stdout.splitlines():
+            match_override = re.search(r"mOverrideDisplayInfo=DisplayInfo\{.*?real\s+(\d+)\s+x\s+(\d+)", res.stdout)
+            if match_override:
+                w, h = int(match_override.group(1)), int(match_override.group(2))
+                self.screen_width = w
+                self.screen_height = h
+                self.is_landscape = (w > h)
+                return self.screen_width, self.screen_height
+
+            # 2. Check input viewports
+            cmd_in = self._cmd_prefix() + ["shell", "dumpsys", "input"]
+            res_in = subprocess.run(cmd_in, capture_output=True, text=True, timeout=2)
+            match_vp = re.search(r"DisplayViewport\[id=0\]\s+Width=(\d+),\s+Height=(\d+)", res_in.stdout)
+            if match_vp:
+                w, h = int(match_vp.group(1)), int(match_vp.group(2))
+                self.screen_width = w
+                self.screen_height = h
+                self.is_landscape = (w > h)
+                return self.screen_width, self.screen_height
+
+            # 3. Fallback to wm size
+            cmd_wm = self._cmd_prefix() + ["shell", "wm", "size"]
+            res_wm = subprocess.run(cmd_wm, capture_output=True, text=True, timeout=2)
+            for line in res_wm.stdout.splitlines():
                 if "size:" in line.lower():
                     dim = line.split(":")[-1].strip()
-                    w, h = dim.split("x")
-                    self.screen_width = int(w)
-                    self.screen_height = int(h)
+                    pw, ph = dim.split("x")
+                    self.screen_width = int(pw)
+                    self.screen_height = int(ph)
+                    self.is_landscape = (self.screen_width > self.screen_height)
                     return self.screen_width, self.screen_height
         except Exception:
             pass
@@ -176,6 +209,7 @@ class AdbController:
         Uses binary pipe for lowest latency:
         1. Fast raw RGBA framebuffer (fastest, zero CPU compression overhead).
         2. Fallback PNG screencap with 5s timeout and CRLF normalization.
+        Automatically synchronizes touch screen coordinates to active orientation!
         """
         # 1. Fast Raw RGBA framebuffer stream
         try:
@@ -189,6 +223,7 @@ class AdbController:
                 if len(raw_bytes) >= expected and w > 0 and h > 0:
                     rgba = np.frombuffer(raw_bytes[16:expected], dtype=np.uint8).reshape((h, w, 4))
                     frame = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+                    self._sync_screen_dimensions(frame)
                     with self._frame_lock:
                         self._latest_frame = frame
                         self._frame_id += 1
@@ -209,6 +244,7 @@ class AdbController:
                     clean = raw_bytes.replace(b"\r\n", b"\n")
                     frame = cv2.imdecode(np.frombuffer(clean, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if frame is not None:
+                    self._sync_screen_dimensions(frame)
                     with self._frame_lock:
                         self._latest_frame = frame
                         self._frame_id += 1
@@ -275,29 +311,37 @@ class AdbController:
     def swipe_up(self, duration_ms: int = 80):
         """Vault / Jump gesture (swipes upward from lower center)."""
         cx = self.screen_width // 2
-        y1 = int(self.screen_height * 0.68)
-        y2 = int(self.screen_height * 0.32)
+        if self.is_landscape:
+            y1 = int(self.screen_height * 0.72)
+            y2 = int(self.screen_height * 0.28)
+        else:
+            y1 = int(self.screen_height * 0.68)
+            y2 = int(self.screen_height * 0.32)
         self.swipe(cx, y1, cx, y2, duration_ms)
 
     def swipe_down(self, duration_ms: int = 80):
         """Slide / Duck gesture (swipes downward from upper center)."""
         cx = self.screen_width // 2
-        y1 = int(self.screen_height * 0.32)
-        y2 = int(self.screen_height * 0.68)
+        if self.is_landscape:
+            y1 = int(self.screen_height * 0.28)
+            y2 = int(self.screen_height * 0.72)
+        else:
+            y1 = int(self.screen_height * 0.32)
+            y2 = int(self.screen_height * 0.68)
         self.swipe(cx, y1, cx, y2, duration_ms)
 
     def swipe_left(self, duration_ms: int = 70):
         """Dodge left gesture (swipes right to left)."""
-        y = int(self.screen_height * 0.55)
-        x1 = int(self.screen_width * 0.82)
-        x2 = int(self.screen_width * 0.18)
+        y = int(self.screen_height * 0.50) if self.is_landscape else int(self.screen_height * 0.55)
+        x1 = int(self.screen_width * 0.75) if self.is_landscape else int(self.screen_width * 0.82)
+        x2 = int(self.screen_width * 0.25) if self.is_landscape else int(self.screen_width * 0.18)
         self.swipe(x1, y1=y, x2=x2, y2=y, duration_ms=duration_ms)
 
     def swipe_right(self, duration_ms: int = 70):
         """Dodge right gesture (swipes left to right)."""
-        y = int(self.screen_height * 0.55)
-        x1 = int(self.screen_width * 0.18)
-        x2 = int(self.screen_width * 0.82)
+        y = int(self.screen_height * 0.50) if self.is_landscape else int(self.screen_height * 0.55)
+        x1 = int(self.screen_width * 0.25) if self.is_landscape else int(self.screen_width * 0.18)
+        x2 = int(self.screen_width * 0.75) if self.is_landscape else int(self.screen_width * 0.82)
         self.swipe(x1, y1=y, x2=x2, y2=y, duration_ms=duration_ms)
 
     def slice_target(self, target_x: int, target_y: int):
@@ -395,56 +439,62 @@ class AdbController:
             # Execute fast chained native card deployment
             self.deploy_clash_card(card_x, card_y, target_x, target_y)
 
-        # 6. Vehicle Driver actions (Earn to Die 2)
+        # 6. Vehicle Driver actions (Earn to Die 2 - Landscape Optimized)
         elif "accelerate" in act or "gas" in act:
-            gx = int(self.screen_width * 0.84)
+            gx = int(self.screen_width * 0.86)
             gy = int(self.screen_height * 0.82)
             self.tap(gx, gy)
         elif "boost" in act or "nitro" in act:
-            bx = int(self.screen_width * 0.16)
+            bx = int(self.screen_width * 0.14)
             by = int(self.screen_height * 0.82)
             self.tap(bx, by)
         elif "tilt_forward" in act:
-            tx = int(self.screen_width * 0.70)
+            tx = int(self.screen_width * 0.75)
             ty = int(self.screen_height * 0.82)
             self.tap(tx, ty)
         elif "tilt_back" in act:
-            tx = int(self.screen_width * 0.30)
+            tx = int(self.screen_width * 0.25)
             ty = int(self.screen_height * 0.82)
             self.tap(tx, ty)
 
-        # 7. EA Sports FC / FIFA Mobile
+        # 7. EA Sports FC / FIFA Mobile (Landscape Optimized)
         elif "sprint_tackle" in act:
             sx = int(self.screen_width * 0.88)
             sy = int(self.screen_height * 0.84)
             self.tap(sx, sy)
         elif "through_pass" in act:
-            tx = int(self.screen_width * 0.76)
-            ty = int(self.screen_height * 0.72)
+            tx = int(self.screen_width * 0.77)
+            ty = int(self.screen_height * 0.70)
             self.tap(tx, ty)
         elif "shoot_goal" in act:
             sx = int(self.screen_width * 0.88)
-            sy = int(self.screen_height * 0.70)
+            sy = int(self.screen_height * 0.68)
             self.tap(sx, sy)
         elif "pass" in act:
-            px = int(self.screen_width * 0.76)
-            py = int(self.screen_height * 0.88)
+            px = int(self.screen_width * 0.77)
+            py = int(self.screen_height * 0.87)
             self.tap(px, py)
+        elif "dribble" in act or "drive_forward" in act:
+            # Analog stick swipe from left quadrant forward down the wing
+            jx1 = int(self.screen_width * 0.16)
+            jy = int(self.screen_height * 0.74)
+            jx2 = int(self.screen_width * 0.24)
+            self.swipe(jx1, jy, jx2, jy, duration_ms=220)
 
-        # 7. Solar Smash
+        # 8. Solar Smash (Landscape Optimized)
         elif "fire_laser" in act or "orbital_strike" in act or "launch_meteor" in act:
             # Tap weapon drawer on right edge, then tap planet center
-            wx = int(self.screen_width * 0.93)
-            wy = int(self.screen_height * 0.35)
+            wx = int(self.screen_width * 0.94)
+            wy = int(self.screen_height * 0.38)
             self.tap(wx, wy)
-            time.sleep(0.03)
+            time.sleep(0.04)
             cx = self.screen_width // 2
             cy = self.screen_height // 2
             self.tap(cx, cy)
         elif "rotate_planet" in act:
             y = self.screen_height // 2
-            x1 = int(self.screen_width * 0.75)
-            x2 = int(self.screen_width * 0.25)
+            x1 = int(self.screen_width * 0.72)
+            x2 = int(self.screen_width * 0.28)
             self.swipe(x1, y, x2, y, duration_ms=120)
 
         # 8. BitLife Simulation

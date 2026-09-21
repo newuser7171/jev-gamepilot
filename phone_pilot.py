@@ -105,19 +105,25 @@ class PhoneGamePilot:
         )
 
         preview_win = f"Laya + Jev Phone Pilot // {self.profile.name}"
+        current_orientation = None
+        preview_w, preview_h = 420, 900
+
         if show_preview:
             cv2.namedWindow(preview_win, cv2.WINDOW_NORMAL)
-            # Scale preview window to comfortable aspect ratio
-            aspect = h / max(1, w)
-            preview_w = 420
-            preview_h = min(900, int(preview_w * aspect))
+            is_init_landscape = (w > h)
+            if is_init_landscape:
+                preview_w = 880
+                preview_h = int(preview_w * (h / max(1, w)))
+            else:
+                preview_w = 420
+                preview_h = min(920, int(preview_w * (h / max(1, w))))
             cv2.resizeWindow(preview_win, preview_w, preview_h)
 
             # Instant splash frame so window never renders unpainted Windows grey
             splash = np.zeros((preview_h, preview_w, 3), dtype=np.uint8)
             splash[:] = (20, 22, 32)
-            cv2.putText(splash, "LAYA + JEV PILOT", (preview_w // 2 - 130, preview_h // 2 - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.95, (0, 255, 204), 2, cv2.LINE_AA)
-            cv2.putText(splash, "Streaming phone screen...", (preview_w // 2 - 110, preview_h // 2 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1, cv2.LINE_AA)
+            cv2.putText(splash, "LAYA + JEV PILOT", (preview_w // 2 - 130, preview_h // 2 - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 204), 2, cv2.LINE_AA)
+            cv2.putText(splash, "Streaming phone screen...", (preview_w // 2 - 110, preview_h // 2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (180, 180, 180), 1, cv2.LINE_AA)
             cv2.imshow(preview_win, splash)
             cv2.waitKey(1)
 
@@ -142,6 +148,25 @@ class PhoneGamePilot:
                             break
                     time.sleep(0.05)
                     continue
+
+                cur_h, cur_w = frame.shape[:2]
+                is_landscape = (cur_w > cur_h)
+                new_orientation = "landscape" if is_landscape else "portrait"
+
+                if new_orientation != current_orientation:
+                    current_orientation = new_orientation
+                    if is_landscape:
+                        preview_w = 880
+                        preview_h = int(preview_w * (cur_h / max(1, cur_w)))
+                    else:
+                        preview_w = 420
+                        preview_h = min(920, int(preview_w * (cur_h / max(1, cur_w))))
+                    if show_preview:
+                        cv2.resizeWindow(preview_win, preview_w, preview_h)
+                    console.print(
+                        f"[bold cyan]📱 Screen Orientation:[/] [bold green]{new_orientation.upper()}[/] "
+                        f"({cur_w}x{cur_h} display -> {preview_w}x{preview_h} HUD window)"
+                    )
 
                 # 2. Perception (Universal Vision)
                 scene: UniversalSceneState = self.vision.analyze_frame(frame, self.profile)
@@ -217,37 +242,65 @@ class PhoneGamePilot:
                 if show_preview:
                     annotated = self.vision.render_debug_overlay(frame, scene, self.profile)
 
-                    # Status Header Banner
+                    # Status Header Banner (adaptive height & font for landscape vs portrait)
                     header_bg = (20, 22, 32)
-                    cv2.rectangle(annotated, (0, 0), (w, 140), header_bg, -1)
-
-                    title_text = f"LAYA + JEV FUSION // {self.profile.name.upper()}"
-                    cv2.putText(
-                        annotated,
-                        title_text,
-                        (30, 55),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        (0, 255, 204),
-                        3,
-                        cv2.LINE_AA,
-                    )
-
                     elixir_info = f" | Elixir: {getattr(scene, 'elixir', 0)}" if "clash" in self.profile.id else ""
-                    stats_text = (
-                        f"Action: {action_name.upper()} | Urgency: {int(scene.threat_urgency*100)}%{elixir_info} | "
-                        f"Actions: {self.total_actions} | FPS: {fps:.1f}"
-                    )
-                    cv2.putText(
-                        annotated,
-                        stats_text,
-                        (30, 110),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.9,
-                        (255, 255, 255),
-                        2,
-                        cv2.LINE_AA,
-                    )
+                    if is_landscape:
+                        header_h = 72
+                        cv2.rectangle(annotated, (0, 0), (cur_w, header_h), header_bg, -1)
+                        title_text = f"LAYA + JEV // {self.profile.name.upper()}"
+                        cv2.putText(
+                            annotated,
+                            title_text,
+                            (25, 28),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.75,
+                            (0, 255, 204),
+                            2,
+                            cv2.LINE_AA,
+                        )
+                        stats_text = (
+                            f"Action: {action_name.upper()} | Urgency: {int(scene.threat_urgency*100)}%{elixir_info} | "
+                            f"Actions: {self.total_actions} | FPS: {fps:.1f} | LANDSCAPE"
+                        )
+                        cv2.putText(
+                            annotated,
+                            stats_text,
+                            (25, 56),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.62,
+                            (255, 255, 255),
+                            2,
+                            cv2.LINE_AA,
+                        )
+                    else:
+                        header_h = 135
+                        cv2.rectangle(annotated, (0, 0), (cur_w, header_h), header_bg, -1)
+                        title_text = f"LAYA + JEV FUSION // {self.profile.name.upper()}"
+                        cv2.putText(
+                            annotated,
+                            title_text,
+                            (30, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            1.1,
+                            (0, 255, 204),
+                            3,
+                            cv2.LINE_AA,
+                        )
+                        stats_text = (
+                            f"Action: {action_name.upper()} | Urgency: {int(scene.threat_urgency*100)}%{elixir_info} | "
+                            f"Actions: {self.total_actions} | FPS: {fps:.1f} | PORTRAIT"
+                        )
+                        cv2.putText(
+                            annotated,
+                            stats_text,
+                            (30, 105),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.85,
+                            (255, 255, 255),
+                            2,
+                            cv2.LINE_AA,
+                        )
 
                     # Downscale display buffer to exact window size for crisp zero-latency rendering
                     disp = cv2.resize(annotated, (preview_w, preview_h), interpolation=cv2.INTER_AREA)
