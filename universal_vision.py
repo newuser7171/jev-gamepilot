@@ -41,6 +41,7 @@ class UniversalSceneState:
     game_speed: float = 0.0
     game_phase: str = "active"  # "main_menu", "in_battle", "game_over", "active"
     elixir: int = 5
+    raw_frame: Optional[np.ndarray] = None
 
 
 class UniversalVision:
@@ -72,7 +73,7 @@ class UniversalVision:
 
         h, w, _ = frame_bgr.shape
         is_portrait = h > w
-        scene = UniversalSceneState()
+        scene = UniversalSceneState(raw_frame=frame_bgr)
 
         # Compute optimal downscale factor for sub-4ms analysis (target max dim ~640)
         max_dim = max(w, h)

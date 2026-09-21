@@ -46,6 +46,14 @@ try:
 except ImportError:
     pass
 
+# Try importing ClashBattleAdapter
+_CLASH_ADAPTER_AVAILABLE = False
+try:
+    from adapters.clash_adapter import ClashBattleAdapter
+    _CLASH_ADAPTER_AVAILABLE = True
+except Exception:
+    pass
+
 
 class UniversalBrain:
     def __init__(self, model_name: str = "jev-latest"):
@@ -60,6 +68,7 @@ class UniversalBrain:
         self.laya_agent = None
         self.laya_loading = False
         self._laya_tried = False
+        self.clash_adapter = ClashBattleAdapter() if _CLASH_ADAPTER_AVAILABLE else None
 
         self.last_decision: Dict[str, Any] = {
             "action": "wait",
@@ -718,58 +727,53 @@ class UniversalBrain:
                     "target_coords": None,
                 }
             else:  # in_battle
-                current_elixir = getattr(scene, "elixir", 5)
-                now = time.time()
-                self._last_clash_deploy = getattr(self, "_last_clash_deploy", 0.0)
-
-                # Only hold for elixir recharge if we deployed very recently (< 2.0s ago)
-                # If idle for >= 2.0s, elixir has regenerated -> break wait and deploy!
-                if current_elixir < 3 and (now - self._last_clash_deploy < 2.0):
-                    return {
-                        "action": "wait",
-                        "threat_score": scene.threat_urgency,
-                        "confidence": 0.98,
-                        "latency_ms": 0.2,
-                        "source": "elixir_recharge_standby",
-                        "target_coords": None,
-                    }
-
-                self._last_clash_deploy = now
-
-                # If nearest threat is invading our territory, defend that lane or central pocket!
-                if scene.nearest_threat and scene.threat_urgency > 0.40:
-                    invader_x = scene.nearest_threat.click_x
-                    if 380 <= invader_x <= 700:
-                        act = "deploy_defense_center"
-                    elif invader_x < 380:
-                        act = "deploy_card_left"
+                # 3-Tier Hierarchical Battle Intelligence Pipeline from clash-jev
+                if self.clash_adapter is not None:
+                    raw_frame = getattr(scene, "raw_frame", None)
+                    if raw_frame is not None:
+                        h, w = raw_frame.shape[:2]
+                        self.clash_adapter.update_resolution(w, h)
                     else:
-                        act = "deploy_card_right"
+                        raw_frame = np.zeros((2340, 1080, 3), dtype=np.uint8)
+
+                    current_elixir = getattr(scene, "elixir", 5)
+                    decision = self.clash_adapter.decide(
+                        raw_frame,
+                        threat_urgency=scene.threat_urgency,
+                        current_elixir=current_elixir,
+                        threats=scene.threats,
+                    )
+                    return decision
+                else:
+                    current_elixir = getattr(scene, "elixir", 5)
+                    now = time.time()
+                    self._last_clash_deploy = getattr(self, "_last_clash_deploy", 0.0)
+
+                    if current_elixir < 3 and (now - self._last_clash_deploy < 2.0):
+                        return {
+                            "action": "wait",
+                            "threat_score": scene.threat_urgency,
+                            "confidence": 0.98,
+                            "latency_ms": 0.2,
+                            "source": "elixir_recharge_standby",
+                            "target_coords": None,
+                        }
+
+                    self._last_clash_deploy = now
+                    if scene.nearest_threat and scene.threat_urgency > 0.40:
+                        act = "deploy_defense_center"
+                    else:
+                        self._clash_push_step = getattr(self, "_clash_push_step", 0) + 1
+                        act = "deploy_card_left" if (self._clash_push_step % 2 == 0) else "deploy_card_right"
+
                     return {
                         "action": act,
                         "threat_score": scene.threat_urgency,
-                        "confidence": 0.96,
+                        "confidence": 0.94,
                         "latency_ms": 0.3,
                         "source": "rts_defense_reflex",
                         "target_coords": None,
                     }
-                # Attack push: rotate continuous pressure between left bridge, right bridge, and spell strikes
-                self._clash_push_step = getattr(self, "_clash_push_step", 0) + 1
-                if self._clash_push_step % 3 == 0:
-                    push_act = "deploy_spell_center"
-                elif self._clash_push_step % 2 == 0:
-                    push_act = "deploy_card_left"
-                else:
-                    push_act = "deploy_card_right"
-
-                return {
-                    "action": push_act,
-                    "threat_score": 0.50,
-                    "confidence": 0.92,
-                    "latency_ms": 0.3,
-                    "source": "rts_offensive_push",
-                    "target_coords": None,
-                }
 
         # 3. Earn to Die 2 / 2D Vehicle Driver
         if profile.id == "mobile_earntodie2":

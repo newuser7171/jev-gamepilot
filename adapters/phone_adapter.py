@@ -637,34 +637,43 @@ class AdbController:
             # Tap OK button or center to dismiss post-game screen or collect rewards
             self.tap(int(self.screen_width * 0.50), int(self.screen_height * 0.83))
             self.tap(int(self.screen_width * 0.50), int(self.screen_height * 0.50))
-        elif "deploy_defense_center" in act:
-            # Golden pocket plant between both Princess Towers to lure both lanes
-            card_slots_x = [int(self.screen_width * x) for x in [0.287, 0.463, 0.634, 0.806]]
-            self._clash_card_idx = (getattr(self, "_clash_card_idx", 0) + 1) % 4
-            self.deploy_clash_card(card_slots_x[self._clash_card_idx], int(self.screen_height * 0.915), int(self.screen_width * 0.505), int(self.screen_height * 0.575))
-        elif "deploy_card_left" in act or "deploy_card_right" in act or "deploy_spell_center" in act:
-            card_slots_x = [
-                int(self.screen_width * 0.287),  # Slot 1: ~310
-                int(self.screen_width * 0.463),  # Slot 2: ~500
-                int(self.screen_width * 0.634),  # Slot 3: ~685
-                int(self.screen_width * 0.806),  # Slot 4: ~870
-            ]
-            self._clash_card_idx = (getattr(self, "_clash_card_idx", 0) + 1) % 4
-            card_x = card_slots_x[self._clash_card_idx]
-            card_y = int(self.screen_height * 0.915)  # ~2140
+        elif "deploy_clash" in act or "deploy_defense_center" in act or "deploy_card_left" in act or "deploy_card_right" in act or "deploy_spell_center" in act:
+            if target_coords and len(target_coords) == 4:
+                card_x, card_y, target_x, target_y = target_coords
+                self.deploy_clash_card(card_x, card_y, target_x, target_y)
+            elif "deploy_defense_center" in act:
+                # Golden pocket plant between both Princess Towers to lure both lanes
+                card_slots_x = [int(self.screen_width * x) for x in [0.287, 0.463, 0.634, 0.806]]
+                self._clash_card_idx = (getattr(self, "_clash_card_idx", 0) + 1) % 4
+                self.deploy_clash_card(card_slots_x[self._clash_card_idx], int(self.screen_height * 0.915), int(self.screen_width * 0.505), int(self.screen_height * 0.575))
+            else:
+                card_slots_x = [
+                    int(self.screen_width * 0.287),  # Slot 1: ~310
+                    int(self.screen_width * 0.463),  # Slot 2: ~500
+                    int(self.screen_width * 0.634),  # Slot 3: ~685
+                    int(self.screen_width * 0.806),  # Slot 4: ~870
+                ]
+                self._clash_card_idx = (getattr(self, "_clash_card_idx", 0) + 1) % 4
+                card_x = card_slots_x[self._clash_card_idx]
+                card_y = int(self.screen_height * 0.915)  # ~2140
 
-            if "deploy_card_left" in act:
-                target_x = int(self.screen_width * 0.194)  # Left bridge mouth
-                target_y = int(self.screen_height * 0.490)
-            elif "deploy_card_right" in act:
-                target_x = int(self.screen_width * 0.731)  # Right bridge mouth
-                target_y = int(self.screen_height * 0.490)
-            else:  # deploy_spell_center
-                self._clash_spell_idx = (getattr(self, "_clash_spell_idx", 0) + 1) % 2
-                target_x = int(self.screen_width * (0.194 if self._clash_spell_idx == 0 else 0.741))
-                target_y = int(self.screen_height * 0.235)
+                if "deploy_card_left" in act:
+                    target_x = int(self.screen_width * 0.194)  # Left bridge mouth
+                    target_y = int(self.screen_height * 0.490)
+                elif "deploy_card_right" in act:
+                    target_x = int(self.screen_width * 0.731)  # Right bridge mouth
+                    target_y = int(self.screen_height * 0.490)
+                elif "deploy_spell_center" in act:
+                    self._clash_spell_idx = (getattr(self, "_clash_spell_idx", 0) + 1) % 2
+                    target_x = int(self.screen_width * (0.194 if self._clash_spell_idx == 0 else 0.741))
+                    target_y = int(self.screen_height * 0.235)
+                elif target_coords and len(target_coords) == 2:
+                    target_x, target_y = target_coords
+                else:
+                    target_x = int(self.screen_width * 0.50)
+                    target_y = int(self.screen_height * 0.50)
 
-            self.deploy_clash_card(card_x, card_y, target_x, target_y)
+                self.deploy_clash_card(card_x, card_y, target_x, target_y)
 
         # 6. Vehicle Driver actions (Earn to Die 2 - Landscape Optimized)
         elif "accelerate" in act or "gas" in act:

@@ -272,9 +272,12 @@ class PhoneGamePilot:
                     self.total_actions += 1
                     self.last_action_time = now
                     self.last_dispatched_action = action_name
+                    strat_str = f" | strat: {decision.get('strategy')}" if decision.get("strategy") else ""
+                    card_str = f" | card: {decision.get('card_name')}" if decision.get("card_name") else ""
+                    tile_str = f" -> {decision.get('square_name')}" if decision.get("square_name") else ""
                     console.print(
                         f"[bold green]⚡ [ACTION][/bold green] [bold white]{action_name.upper()}[/] "
-                        f"({decision.get('source')} | conf: {decision.get('confidence'):.2f})"
+                        f"({decision.get('source')}{strat_str}{card_str}{tile_str} | conf: {decision.get('confidence'):.2f})"
                     )
 
                 # 5. Live Debug Overlay

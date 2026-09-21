@@ -13,13 +13,13 @@ echo  2. Balatro / Poker Roguelike (Play Hand, Discard, Cash Out)
 echo  3. Slay the Spire / Roguelike Deckbuilder (Drag Attacks, Shields, End Turn)
 echo  4. Hearthstone / MTG Arena / Master Duel (Card Play, Minion Trades, Face)
 echo  5. Windows Solitaire Collection (Tableau Cascade, Stock, Waste, Auto-Finish)
-echo  6. Chrome Dino ^& Browser Runners (Jump, Duck, Auto-Restart)
-echo  7. Aim Lab ^& Target Clickers (Precision Centroid Flick Click)
+echo  6. Chrome Dino and Browser Runners (Jump, Duck, Auto-Restart)
+echo  7. Aim Lab and Target Clickers (Precision Centroid Flick Click)
 echo  8. Roblox / Obby Parkour (WASD Movement, Space Jump, Camera)
-echo  9. Minecraft / Survival ^& Mining (WASD, Jump, Mine, Place)
-echo 10. Trackmania ^& PC Racing (Throttle, Steer, Drift Brake)
+echo  9. Minecraft / Survival and Mining (WASD, Jump, Mine, Place)
+echo 10. Trackmania and PC Racing (Throttle, Steer, Drift Brake)
 echo 11. Retro 2D Platformer / Arcade (D-pad Movement, Jump, Attack)
-echo 12. Chess.com ^& Lichess Screen Copilot (Best Move Clicker)
+echo 12. Chess.com and Lichess Screen Copilot (Best Move Clicker)
 echo.
 set /p choice="Select mode [1-12] (default: 1): "
 

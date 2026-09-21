@@ -10,16 +10,16 @@ echo.
 echo Mode:
 echo  1. [AUTO] Universal AI (Auto-detects ANY game opened on phone)
 echo  2. Subway Surfers / 3-Lane Runners (Swipes Up/Down/Left/Right)
-echo  3. Fruit Ninja ^& Slicers (Diagonal Target Slices)
-echo  4. Clash Royale ^& RTS (Lane Deployment, Spells, Deck Timing)
+echo  3. Fruit Ninja and Slicers (Diagonal Target Slices)
+echo  4. Clash Royale and RTS (Lane Deployment, Spells, Deck Timing)
 echo  5. Earn to Die 2 / 2D Drivers (Gas, Boost, Tilt)
 echo  6. EA Sports FC / FIFA Mobile (Sprint, Pass, Shoot)
-echo  7. Solar Smash ^& Sandboxes (Laser, Asteroids, Superweapons)
-echo  8. BitLife ^& Choice Sims (Age Progression, Scenario Decisions)
+echo  7. Solar Smash and Sandboxes (Laser, Asteroids, Superweapons)
+echo  8. BitLife and Choice Sims (Age Progression, Scenario Decisions)
 echo  9. Flappy Bird / One-Tap Arcades (Precision Taps)
-echo 10. Card Games ^& TCGs (Marvel SNAP, Hearthstone, Pokemon, Balatro)
-echo 11. Solitaire ^& Classic Card Puzzles (Klondike, Spider, FreeCell)
-echo 12. Snake ^& Grid Arcades (4-Way Turn Reflexes)
+echo 10. Card Games and TCGs (Marvel SNAP, Hearthstone, Pokemon, Balatro)
+echo 11. Solitaire and Classic Card Puzzles (Klondike, Spider, FreeCell)
+echo 12. Snake and Grid Arcades (4-Way Turn Reflexes)
 echo.
 set /p choice="Select mode [1-12] (default: 1): "
 
