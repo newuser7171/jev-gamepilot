@@ -517,8 +517,11 @@ class UniversalBrain:
         - Evaluates Flappy Bird gap height vs bird fall velocity.
         """
         # 1. Target Clicker / Fruit Ninja Slicing
-        if (profile.category == "clicker" or "fruit" in profile.id) and scene.best_target:
-            action_name = "combo_slice" if len(scene.targets) >= 2 else "slice_target"
+        if ("fruit" in profile.id or (profile.category == "clicker" and any(a.name == "click_target" for a in profile.actions))) and scene.best_target:
+            action_name = (
+                ("combo_slice" if len(scene.targets) >= 2 else "slice_target")
+                if "fruit" in profile.id else "click_target"
+            )
             return {
                 "action": action_name,
                 "threat_score": 0.95,
