@@ -483,87 +483,146 @@ class AdbController:
             ty = int(self.screen_height * 0.28)
             self.swipe(fx, fy, tx, ty, duration_ms=260)
 
+    def _get_solitaire_layout(self) -> Dict[str, Any]:
+        """
+        Dynamically detects Solitaire layout from latest frame or applies calibrated standards.
+        Supports standard right-handed layout (foundations left, stock right) and left-handed layout.
+        """
+        w, h = self.screen_width, self.screen_height
+        if self.is_landscape:
+            return {
+                "stock": (int(w * 0.08), int(h * 0.20)),
+                "waste": (int(w * 0.08), int(h * 0.45)),
+                "foundations": [(int(w * 0.92), int(h * y)) for y in [0.18, 0.38, 0.58, 0.78]],
+                "columns_x": [int(w * r) for r in [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]],
+            }
+
+        # Portrait mode: default to standard right-handed layout unless left-hand stock is detected
+        stock_on_right = True
+        with self._frame_lock:
+            frame = self._latest_frame
+
+        if frame is not None:
+            try:
+                fh, fw = frame.shape[:2]
+                p_left = frame[int(fh * 0.160), int(fw * 0.10)].astype(np.int32)
+                p_right = frame[int(fh * 0.160), int(fw * 0.88)].astype(np.int32)
+                # Green felt detection: green channel dominates both blue and red
+                left_is_felt = (p_left[1] > 25) and (p_left[1] > p_left[0] * 1.12) and (p_left[1] > p_left[2] * 1.12)
+                right_is_felt = (p_right[1] > 25) and (p_right[1] > p_right[0] * 1.12) and (p_right[1] > p_right[2] * 1.12)
+                if right_is_felt and not left_is_felt:
+                    stock_on_right = False
+            except Exception:
+                pass
+
+        if stock_on_right:
+            # Standard Right-Handed layout (Foundations on left, Waste & Stock on right)
+            # Standard in Klondike, MobilityWare, Microsoft Solitaire, Google
+            stock_pos = (int(w * 0.88), int(h * 0.160))
+            waste_pos = (int(w * 0.64), int(h * 0.160))
+            foundations = [(int(w * r), int(h * 0.160)) for r in [0.085, 0.223, 0.362, 0.500]]
+        else:
+            # Left-Handed layout (Stock & Waste on left, Foundations on right)
+            stock_pos = (int(w * 0.12), int(h * 0.160))
+            waste_pos = (int(w * 0.36), int(h * 0.160))
+            foundations = [(int(w * r), int(h * 0.160)) for r in [0.500, 0.638, 0.777, 0.915]]
+
+        columns_x = [int(w * r) for r in [0.085, 0.223, 0.362, 0.500, 0.638, 0.777, 0.915]]
+        return {
+            "stock": stock_pos,
+            "waste": waste_pos,
+            "foundations": foundations,
+            "columns_x": columns_x,
+        }
+
+    def _get_solitaire_column_exposed_y(self, col_idx: int) -> int:
+        """Finds the y-coordinate of the exposed card in column col_idx using CV scan or geometric fallback."""
+        col_idx = max(0, min(6, col_idx))
+        h, w = self.screen_height, self.screen_width
+        if self.is_landscape:
+            return int(h * 0.55)
+
+        with self._frame_lock:
+            frame = self._latest_frame
+
+        if frame is not None:
+            try:
+                fh, fw = frame.shape[:2]
+                col_ratios = [0.085, 0.223, 0.362, 0.500, 0.638, 0.777, 0.915]
+                cx = int(fw * col_ratios[col_idx])
+                y_start = int(fh * 0.26)
+                y_end = int(fh * 0.75)
+                column_pixels = frame[y_start:y_end, cx].astype(np.int32)
+                # Green felt detection: green channel dominates both blue and red
+                is_felt = (column_pixels[:, 1] > 25) & (column_pixels[:, 1] > column_pixels[:, 0] * 1.12) & (column_pixels[:, 1] > column_pixels[:, 2] * 1.12)
+                card_indices = np.where(~is_felt)[0]
+                if len(card_indices) > 0:
+                    last_card_y = y_start + int(card_indices[-1])
+                    first_card_y = y_start + int(card_indices[0])
+                    # Tapping slightly above bottom edge lands squarely on the exposed card face
+                    return max(first_card_y, last_card_y - int(fh * 0.022))
+            except Exception:
+                pass
+
+        # Calibrated geometric fallback for portrait tableau
+        return int(h * (0.31 + col_idx * 0.035))
+
     def tap_solitaire_stock(self):
         """Taps top stock pile to deal next card(s)."""
-        if self.is_landscape:
-            sx = int(self.screen_width * 0.08)
-            sy = int(self.screen_height * 0.20)
-        else:
-            sx = int(self.screen_width * 0.12)
-            sy = int(self.screen_height * 0.125)
+        layout = self._get_solitaire_layout()
+        sx, sy = layout["stock"]
         self.tap(sx, sy)
 
     def tap_solitaire_waste(self):
         """Taps waste pile card to auto-move to foundation or build onto tableau."""
-        if self.is_landscape:
-            wx = int(self.screen_width * 0.08)
-            wy = int(self.screen_height * 0.45)
-        else:
-            wx = int(self.screen_width * 0.25)
-            wy = int(self.screen_height * 0.125)
+        layout = self._get_solitaire_layout()
+        wx, wy = layout["waste"]
         self.tap(wx, wy)
 
-    def tap_solitaire_column(self, col_idx: int = 0, y_ratio: float = 0.50):
+    def tap_solitaire_column(self, col_idx: int = 0, y_ratio: Optional[float] = None):
         """
         Taps exposed card in tableau column (0-6).
-        Mobile solitaire has built-in tap-to-move which automatically sends valid cards to foundations or tableau!
-        Executes an atomic 2-depth cascade tap to reliably hit short (1-2 cards) or deep (5-8 cards) stacks.
+        Uses dynamic CV scan to locate exact exposed card or calibrated layout.
         """
         col_idx = max(0, min(6, col_idx))
-        if self.is_landscape:
-            col_ratios = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
-            cx = int(self.screen_width * col_ratios[col_idx])
-            y1 = int(self.screen_height * 0.45)
-            y2 = int(self.screen_height * 0.65)
+        layout = self._get_solitaire_layout()
+        cx = layout["columns_x"][col_idx]
+        if y_ratio is not None:
+            cy = int(self.screen_height * y_ratio)
         else:
-            col_ratios = [0.10, 0.23, 0.37, 0.50, 0.63, 0.77, 0.90]
-            cx = int(self.screen_width * col_ratios[col_idx])
-            y1 = int(self.screen_height * 0.38)
-            y2 = int(self.screen_height * 0.56)
-        shell_script = f"input tap {cx} {y1} && sleep 0.05 && input tap {cx} {y2}"
-        self._run_shell(shell_script)
+            cy = self._get_solitaire_column_exposed_y(col_idx)
+        self.tap(cx, cy)
 
     def drag_solitaire_transfer(self, from_col: int = 0, to_col: int = 1):
         """Drags card/sequence between two tableau columns."""
         from_col = max(0, min(6, from_col))
         to_col = max(0, min(6, to_col))
-        if self.is_landscape:
-            col_ratios = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
-            fx = int(self.screen_width * col_ratios[from_col])
-            tx = int(self.screen_width * col_ratios[to_col])
-            y = int(self.screen_height * 0.55)
-        else:
-            col_ratios = [0.10, 0.23, 0.37, 0.50, 0.63, 0.77, 0.90]
-            fx = int(self.screen_width * col_ratios[from_col])
-            tx = int(self.screen_width * col_ratios[to_col])
-            y = int(self.screen_height * 0.52)
-        self.swipe(fx, y, tx, y, duration_ms=260)
+        if from_col == to_col:
+            return
+        layout = self._get_solitaire_layout()
+        fx = layout["columns_x"][from_col]
+        tx = layout["columns_x"][to_col]
+        fy = self._get_solitaire_column_exposed_y(from_col)
+        ty = self._get_solitaire_column_exposed_y(to_col)
+        self.swipe(fx, fy, tx, ty, duration_ms=260)
 
     def tap_solitaire_foundation(self, found_idx: int = 0):
         """Taps one of the 4 foundation piles (Aces to Kings)."""
         found_idx = max(0, min(3, found_idx))
-        if self.is_landscape:
-            fx = int(self.screen_width * 0.92)
-            y_ratios = [0.18, 0.38, 0.58, 0.78]
-            fy = int(self.screen_height * y_ratios[found_idx])
-        else:
-            x_ratios = [0.53, 0.66, 0.79, 0.92]
-            fx = int(self.screen_width * x_ratios[found_idx])
-            fy = int(self.screen_height * 0.125)
+        layout = self._get_solitaire_layout()
+        fx, fy = layout["foundations"][found_idx]
         self.tap(fx, fy)
 
     def sweep_solitaire_tableau(self):
         """
-        Executes a swift, chained multi-tap sweep across all 7 tableau columns.
+        Executes a swift, chained multi-tap sweep across all 7 tableau columns at their exposed cards.
         Triggers instant cascade of available auto-moves!
         """
-        if self.is_landscape:
-            col_ratios = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
-            y = int(self.screen_height * 0.55)
-        else:
-            col_ratios = [0.10, 0.23, 0.37, 0.50, 0.63, 0.77, 0.90]
-            y = int(self.screen_height * 0.52)
-        pts = [(int(self.screen_width * r), y) for r in col_ratios]
+        layout = self._get_solitaire_layout()
+        pts = []
+        for i, cx in enumerate(layout["columns_x"]):
+            cy = self._get_solitaire_column_exposed_y(i)
+            pts.append((cx, cy))
         self.chained_taps(pts, delay_sec=0.06)
 
     def trigger_auto_restart(self):
@@ -901,7 +960,7 @@ class AdbController:
             if target_coords:
                 self.tap(target_coords[0], target_coords[1])
             else:
-                self.tap_solitaire_column(col_idx, y_ratio=0.55)
+                self.tap_solitaire_column(col_idx)
         elif "drag_column_transfer" in act or "column_transfer" in act:
             self._sol_xfer_step = (getattr(self, "_sol_xfer_step", 0) + 1) % 6
             # Try transferring between adjacent or valid columns
@@ -942,3 +1001,25 @@ class AdbController:
             self.swipe_left(duration_ms=60)
         elif "turn_right" in act or "snake_right" in act:
             self.swipe_right(duration_ms=60)
+
+        # 15. Universal Fallback: Ensure no action is ever silently dropped as a no-op!
+        else:
+            if target_coords and len(target_coords) == 2:
+                self.tap(target_coords[0], target_coords[1])
+            elif target_coords and len(target_coords) == 4:
+                self.swipe(target_coords[0], target_coords[1], target_coords[2], target_coords[3], duration_ms=200)
+            elif "swipe" in act or "drag" in act:
+                if "up" in act:
+                    self.swipe_up()
+                elif "down" in act:
+                    self.swipe_down()
+                elif "left" in act:
+                    self.swipe_left()
+                elif "right" in act:
+                    self.swipe_right()
+                else:
+                    self.swipe_up()
+            elif "tap" in act or "click" in act:
+                self.tap(self.screen_width // 2, int(self.screen_height * 0.60))
+            else:
+                self.tap(self.screen_width // 2, self.screen_height // 2)

@@ -268,17 +268,20 @@ class PhoneGamePilot:
 
                 is_cooling_down = (now - self.last_action_time <= cooldown)
                 if action_name not in ["wait", "maintain_course", "stand_idle"] and not is_cooling_down:
-                    self.adb.dispatch_action(action_name, target_coords=decision.get("target_coords"))
-                    self.total_actions += 1
-                    self.last_action_time = now
-                    self.last_dispatched_action = action_name
-                    strat_str = f" | strat: {decision.get('strategy')}" if decision.get("strategy") else ""
-                    card_str = f" | card: {decision.get('card_name')}" if decision.get("card_name") else ""
-                    tile_str = f" -> {decision.get('square_name')}" if decision.get("square_name") else ""
-                    console.print(
-                        f"[bold green]⚡ [ACTION][/bold green] [bold white]{action_name.upper()}[/] "
-                        f"({decision.get('source')}{strat_str}{card_str}{tile_str} | conf: {decision.get('confidence'):.2f})"
-                    )
+                    try:
+                        self.adb.dispatch_action(action_name, target_coords=decision.get("target_coords"))
+                        self.total_actions += 1
+                        self.last_action_time = now
+                        self.last_dispatched_action = action_name
+                        strat_str = f" | strat: {decision.get('strategy')}" if decision.get("strategy") else ""
+                        card_str = f" | card: {decision.get('card_name')}" if decision.get("card_name") else ""
+                        tile_str = f" -> {decision.get('square_name')}" if decision.get("square_name") else ""
+                        console.print(
+                            f"[bold green]⚡ [ACTION][/bold green] [bold white]{action_name.upper()}[/] "
+                            f"({decision.get('source')}{strat_str}{card_str}{tile_str} | conf: {decision.get('confidence'):.2f})"
+                        )
+                    except Exception as e:
+                        console.print(f"[bold red]❌ [ADB DISPATCH ERROR][/bold red] Failed to actuate {action_name}: {e}")
 
                 # 5. Live Debug Overlay
                 if show_preview:
