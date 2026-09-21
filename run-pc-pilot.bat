@@ -3,7 +3,7 @@ title Laya + Jev PC Game Pilot // Autonomous PC Gaming AI
 cd /d "C:\Users\newuser\.gemini\antigravity\scratch\jev-gamepilot"
 
 echo =======================================================
-echo     ⚡ LAYA + JEV UNIVERSAL PC GAME PILOT
+echo       LAYA + JEV UNIVERSAL PC GAME PILOT
 echo       Dual-Tier Autonomous AI Driver for PC Games
 echo =======================================================
 echo.
@@ -13,8 +13,8 @@ echo  2. Balatro / Poker Roguelike (Play Hand, Discard, Cash Out)
 echo  3. Slay the Spire / Roguelike Deckbuilder (Drag Attacks, Shields, End Turn)
 echo  4. Hearthstone / MTG Arena / Master Duel (Card Play, Minion Trades, Face)
 echo  5. Windows Solitaire Collection (Tableau Cascade, Stock, Waste, Auto-Finish)
-echo  6. Chrome Dino & Browser Runners (Jump, Duck, Auto-Restart)
-echo  7. Aim Lab & Target Clickers (Precision Centroid Flick Click)
+echo  6. Chrome Dino ^& Browser Runners (Jump, Duck, Auto-Restart)
+echo  7. Aim Lab ^& Target Clickers (Precision Centroid Flick Click)
 echo  8. Roblox / Obby Parkour (WASD Movement, Space Jump, Camera)
 echo  9. Minecraft / Survival ^& Mining (WASD, Jump, Mine, Place)
 echo 10. Trackmania ^& PC Racing (Throttle, Steer, Drift Brake)
