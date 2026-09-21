@@ -1,6 +1,6 @@
 @echo off
 title Jev-GamePilot Autonomous AI Gaming Agent
-cd /d "C:\Users\newuser\.gemini\antigravity\scratch\jev-gamepilot"
+cd /d "%~dp0"
 
 echo =======================================================
 echo     ⚡ JEV-GAMEPILOT // AUTONOMOUS AI GAMING AGENT

@@ -1,6 +1,6 @@
 @echo off
 title Laya + Jev PC Game Pilot // Autonomous PC Gaming AI
-cd /d "C:\Users\newuser\.gemini\antigravity\scratch\jev-gamepilot"
+cd /d "%~dp0"
 
 echo =======================================================
 echo       LAYA + JEV UNIVERSAL PC GAME PILOT

@@ -32,8 +32,11 @@ Connects directly to an Android phone over USB or Wi-Fi via ADB with zero-latenc
 
 ## ⚡ Quick Start
 
+Keep the `.bat` launchers in the repository folder. They resolve their working
+directory relative to their own location, so the checkout can live anywhere.
+
 ### Run PC Game Pilot
-Double-click `run-pc-pilot.bat` (available on Desktop, Downloads, and repo root) or run:
+Double-click `run-pc-pilot.bat` in the repository folder or run:
 ```powershell
 # Auto-detects active PC game window
 python pc_pilot.py --profile auto
@@ -47,7 +50,7 @@ python pc_pilot.py --profile pc_aimlab
 ```
 
 ### Run Phone Game Pilot
-Double-click `run-phone-pilot.bat` (available on Desktop, Downloads, and repo root) or run:
+Double-click `run-phone-pilot.bat` in the repository folder or run:
 ```powershell
 # Auto-detects active foreground game on phone
 python phone_pilot.py --profile auto
@@ -88,3 +91,10 @@ jev-gamepilot/
 * **ESC / Q**: Instant emergency stop and shutdown.
 * **Space / F8**: Toggle inputs between **ARMED** (live controls) and **DISARMED** (monitor only).
 * **Failsafe Corner**: Flick mouse to top-left corner (0, 0) for immediate PyAutoGUI hardware interrupt.
+
+## Offline regression tests
+
+Run `python -m unittest discover -s tests -v` from the repository folder.
+These tests mock desktop APIs: they do not send keyboard/mouse events, contact
+AI services, or require a running game. The separate `test_classifier_pilot.py`
+script is a live network smoke test and is not part of this offline suite.
