@@ -1,26 +1,35 @@
 """
 Universal Cyber Desktop GUI for Jev-GamePilot.
 Built with CustomTkinter to deliver a universal autonomous gaming AI:
-1. Dynamic Game Profile System (Dino Runner, Subway Surfers, Flappy Bird, Aim Trainer, 2D Platformer, + Custom).
-2. Native 60 FPS Dino Arena + Universal External Screen Grabber for ANY game.
-3. Player Avatar Calibration & Threat Vector Tracking.
-4. Floating Mini-Bar Mode for playing games full-screen.
+1. 📱 Android Phone Pilot & Live Mirror via ADB (Samsung Galaxy, etc.).
+2. 🖥️ Universal PC Screen Grabber for ANY Desktop Game (Balatro, Slay the Spire, Solitaire, etc.).
+3. 🎮 Native 60 FPS Dino Arena for Instant Playground Testing.
+4. Interactive Phone Touch: Click the video screen on PC to physically tap the phone!
+5. Real-Time Jev System One Brain Telemetry Deck & Floating Mini-Bar Mode.
 """
 
 import ctypes
 import os
+import re
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
+from typing import Any, Dict, List, Optional, Tuple
+
 import cv2
 import customtkinter as ctk
 import numpy as np
 from PIL import Image, ImageTk
+
+from adapters.phone_adapter import AdbController, PACKAGE_PROFILE_MAP
 from custom_profile_dialog import CustomProfileDialog
 from embedded_dino import EmbeddedDinoArena
 from pilot_core import PilotCore
-from profile_manager import GameAction, GameProfile
+from profile_manager import GameAction, GameProfile, ProfileManager
+from universal_brain import UniversalBrain
+from universal_vision import UniversalSceneState, UniversalVision
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -30,18 +39,37 @@ class GamePilotHUD(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Jev-GamePilot // Universal Autonomous Gaming AI")
-        self.geometry("1160x760")
-        self.minsize(1040, 700)
+        self.title("⚡ Jev-GamePilot // Universal Autonomous AI Gaming Station")
+        self.geometry("1180x780")
+        self.minsize(1060, 720)
         self.configure(fg_color="#0a0b10")
 
+        # Core Engines
         self.core = PilotCore()
         self.core.set_telemetry_callback(self._on_telemetry_update)
 
+        # Phone Pilot Engine
+        self.phone_adb = AdbController()
+        self.phone_vision = UniversalVision()
+        self.phone_brain = UniversalBrain()
+        self.phone_profile_mgr = ProfileManager()
+        self.phone_profile: GameProfile = self.phone_profile_mgr.get_profile("mobile_solitaire")
+        self.is_phone_pilot_running = False
+        self.phone_total_actions = 0
+        self.phone_last_action_time = 0.0
+        self._phone_worker_thread: Optional[threading.Thread] = None
+        self._phone_preview_running = False
+        self.phone_auto_detect_enabled = True
+        self.phone_current_pkg = "Unknown"
+        self._last_phone_pkg_check = 0.0
+
+        # Touch geometry tracking for phone mirror
+        self.phone_img_rect = (0, 0, 1, 1)  # (offset_x, offset_y, rendered_w, rendered_h)
+        self.phone_rendered_dim = (1080, 2340)
+
         # State tracking
         self.current_img_tk: ImageTk.PhotoImage | None = None
-        self.is_armed = False
-        self.active_arena_mode = "native"  # "native" or "external"
+        self.active_arena_mode = "phone" if self.phone_adb.is_connected else "native"
         self.countdown_timer = None
         self._active_bound_key = None
         self.is_mini_mode = False
@@ -53,8 +81,17 @@ class GamePilotHUD(ctk.CTk):
         # Keyboard shortcuts
         self.bind("<Escape>", lambda e: self.emergency_stop())
 
-        # Auto-detect game window on start
-        self.after(500, self._auto_detect_game_window)
+        # Start continuous phone background stream if connected
+        if self.phone_adb.is_connected:
+            self.phone_adb.start_background_stream()
+            self._start_phone_preview()
+            self._update_phone_device_info()
+        else:
+            self.after(500, self._auto_detect_game_window)
+
+    # =========================================================================
+    # HEADER
+    # =========================================================================
 
     def _build_header(self):
         self.header_frame = ctk.CTkFrame(
@@ -76,7 +113,7 @@ class GamePilotHUD(ctk.CTk):
 
         sub_lbl = ctk.CTkLabel(
             title_box,
-            text=" // UNIVERSAL GAMING AI",
+            text=" // CYBER AI GAMING STATION",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#70758a",
         )
@@ -111,38 +148,290 @@ class GamePilotHUD(ctk.CTk):
         )
         self.status_badge.pack(side="left")
 
+    # =========================================================================
+    # MAIN LAYOUT
+    # =========================================================================
+
     def _build_main_layout(self):
         self.main_container = ctk.CTkFrame(self, fg_color="transparent")
         self.main_container.pack(fill="both", expand=True, padx=15, pady=15)
 
-        # Left Column: Profile Selector, Actions, Calibration, Start
-        left_col = ctk.CTkFrame(
-            self.main_container, fg_color="#12131c", corner_radius=10, width=350
+        # Left Column: Mode Switcher & Mode-Specific Controls
+        self.left_col = ctk.CTkFrame(
+            self.main_container, fg_color="#12131c", corner_radius=10, width=360
         )
-        left_col.pack(side="left", fill="y", padx=(0, 10), pady=0)
-        left_col.pack_propagate(False)
+        self.left_col.pack(side="left", fill="y", padx=(0, 10), pady=0)
+        self.left_col.pack_propagate(False)
 
         # Right Column: Viewport & Jev Brain Telemetry
         right_col = ctk.CTkFrame(self.main_container, fg_color="transparent")
         right_col.pack(side="right", fill="both", expand=True, padx=0, pady=0)
 
-        self._build_left_controls(left_col)
+        self._build_left_controls(self.left_col)
         self._build_right_viewport(right_col)
+
+    # =========================================================================
+    # LEFT CONTROLS (MODE SELECTOR + CONTEXT PANELS)
+    # =========================================================================
 
     def _build_left_controls(self, parent):
         pad_x = 15
 
-        # 1. Universal Game Profile Selector
-        sec1_lbl = ctk.CTkLabel(
+        # 0. Primary Gaming Mode Selector
+        mode_lbl = ctk.CTkLabel(
             parent,
-            text="GAME PROFILE",
+            text="AI PILOT STATION MODE",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#00ffcc",
         )
-        sec1_lbl.pack(anchor="w", padx=pad_x, pady=(12, 4))
+        mode_lbl.pack(anchor="w", padx=pad_x, pady=(12, 4))
+
+        self.mode_selector = ctk.CTkSegmentedButton(
+            parent,
+            values=[
+                "📱 Phone (ADB)",
+                "🖥️ PC Window",
+                "🎮 Dino Arena",
+            ],
+            command=self._on_mode_switched,
+            fg_color="#1a1c26",
+            selected_color="#00d26a",
+            selected_hover_color="#00b058",
+            unselected_color="#1a1c26",
+            unselected_hover_color="#2b2f42",
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=11, weight="bold"),
+        )
+        init_val = "📱 Phone (ADB)" if self.phone_adb.is_connected else "🎮 Dino Arena"
+        self.mode_selector.set(init_val)
+        self.mode_selector.pack(fill="x", padx=pad_x, pady=(0, 10))
+
+        # Separator
+        ctk.CTkFrame(parent, height=1, fg_color="#1f2230").pack(
+            fill="x", padx=pad_x, pady=(0, 8)
+        )
+
+        # Container for context-specific panels
+        self.control_container = ctk.CTkFrame(parent, fg_color="transparent")
+        self.control_container.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Build individual control sub-frames
+        self._build_phone_control_panel(self.control_container)
+        self._build_pc_control_panel(self.control_container)
+        self._build_dino_control_panel(self.control_container)
+
+        # Display initial mode panel
+        self._show_active_control_panel(self.mode_selector.get())
+
+    # --- 1. PHONE CONTROL PANEL ---
+    def _build_phone_control_panel(self, parent):
+        self.phone_panel = ctk.CTkFrame(parent, fg_color="transparent")
+        pad_x = 15
+
+        # Device connection status card
+        dev_card = ctk.CTkFrame(self.phone_panel, fg_color="#1a1c28", corner_radius=8)
+        dev_card.pack(fill="x", padx=pad_x, pady=(0, 8))
+
+        dev_row = ctk.CTkFrame(dev_card, fg_color="transparent")
+        dev_row.pack(fill="x", padx=10, pady=(8, 4))
+
+        self.phone_dev_lbl = ctk.CTkLabel(
+            dev_row,
+            text="📱 Checking ADB...",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#ffffff",
+        )
+        self.phone_dev_lbl.pack(side="left")
+
+        refresh_dev_btn = ctk.CTkButton(
+            dev_row,
+            text="🔄",
+            width=32,
+            height=24,
+            fg_color="#232638",
+            hover_color="#333750",
+            command=self._refresh_phone_connection,
+        )
+        refresh_dev_btn.pack(side="right")
+
+        self.phone_status_lbl = ctk.CTkLabel(
+            dev_card,
+            text="Status: Inspecting USB...",
+            font=ctk.CTkFont(size=10),
+            text_color="#70758a",
+        )
+        self.phone_status_lbl.pack(anchor="w", padx=10, pady=(0, 6))
+
+        # Active App Info & Auto Switch
+        app_card = ctk.CTkFrame(self.phone_panel, fg_color="#1a1c28", corner_radius=8)
+        app_card.pack(fill="x", padx=pad_x, pady=(0, 8))
+
+        self.phone_app_lbl = ctk.CTkLabel(
+            app_card,
+            text="App: Detecting...",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#00ffcc",
+        )
+        self.phone_app_lbl.pack(anchor="w", padx=10, pady=(6, 2))
+
+        self.phone_auto_switch = ctk.CTkSwitch(
+            app_card,
+            text="Auto-Detect Game Switch",
+            font=ctk.CTkFont(size=10),
+            text_color="#c0c0c0",
+            progress_color="#00ffcc",
+            command=self._on_toggle_phone_auto_detect,
+        )
+        self.phone_auto_switch.select()
+        self.phone_auto_switch.pack(anchor="w", padx=10, pady=(0, 6))
+
+        # Phone Game Profile Selector
+        prof_lbl = ctk.CTkLabel(
+            self.phone_panel,
+            text="PHONE GAME PROFILE",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#00ffcc",
+        )
+        prof_lbl.pack(anchor="w", padx=pad_x, pady=(4, 2))
+
+        phone_profiles = [
+            "♠️ Solitaire & Classic Cards (mobile_solitaire)",
+            "👑 Clash Royale RTS (mobile_clash_royale)",
+            "🏄 Subway Surfers 3-Lane (runner_3lane)",
+            "🍉 Fruit Ninja Blade (mobile_fruit_ninja)",
+            "🚗 Earn to Die 2 Zombie Hill (mobile_earntodie2)",
+            "⚽ EA Sports FC / FIFA Mobile (mobile_fifa)",
+            "💥 Solar Smash Planetary (mobile_solarsmash)",
+            "🧬 BitLife Life Sim (mobile_bitlife)",
+            "🃏 Balatro / Card Battlers (mobile_card_battler)",
+            "🐍 Snake & Grid Arcades (mobile_snake)",
+            "📱 Universal Android AI (mobile_universal)",
+        ]
+        self.phone_prof_selector = ctk.CTkOptionMenu(
+            self.phone_panel,
+            values=phone_profiles,
+            command=self._on_phone_profile_selected,
+            fg_color="#1a1c26",
+            button_color="#2b2f42",
+            button_hover_color="#00ffcc",
+            text_color="#ffffff",
+            dropdown_fg_color="#1a1c26",
+            height=30,
+        )
+        self.phone_prof_selector.set(phone_profiles[0])
+        self.phone_prof_selector.pack(fill="x", padx=pad_x, pady=(0, 8))
+
+        # Quick Manual Touch Shortcuts (Grid of 4)
+        quick_lbl = ctk.CTkLabel(
+            self.phone_panel,
+            text="QUICK TOUCH SHORTCUTS",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#00ffcc",
+        )
+        quick_lbl.pack(anchor="w", padx=pad_x, pady=(4, 4))
+
+        quick_grid = ctk.CTkFrame(self.phone_panel, fg_color="transparent")
+        quick_grid.pack(fill="x", padx=pad_x, pady=(0, 8))
+
+        btn_stock = ctk.CTkButton(
+            quick_grid,
+            text="♠️ Draw Stock",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#1f2232",
+            hover_color="#2c3044",
+            text_color="#ffffff",
+            height=26,
+            command=lambda: self._dispatch_quick_touch("draw_stock"),
+        )
+        btn_stock.grid(row=0, column=0, padx=(0, 4), pady=2, sticky="ew")
+
+        btn_sweep = ctk.CTkButton(
+            quick_grid,
+            text="⚡ Sweep Table",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#1f2232",
+            hover_color="#2c3044",
+            text_color="#ffffff",
+            height=26,
+            command=lambda: self._dispatch_quick_touch("sweep_all_columns"),
+        )
+        btn_sweep.grid(row=0, column=1, padx=(4, 0), pady=2, sticky="ew")
+
+        btn_center = ctk.CTkButton(
+            quick_grid,
+            text="🎯 Center Tap",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#1f2232",
+            hover_color="#2c3044",
+            text_color="#ffffff",
+            height=26,
+            command=lambda: self._dispatch_quick_touch("tap_center"),
+        )
+        btn_center.grid(row=1, column=0, padx=(0, 4), pady=2, sticky="ew")
+
+        btn_restart = ctk.CTkButton(
+            quick_grid,
+            text="🔄 Auto-Deal",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#1f2232",
+            hover_color="#2c3044",
+            text_color="#ffffff",
+            height=26,
+            command=lambda: self._dispatch_quick_touch("new_deal"),
+        )
+        btn_restart.grid(row=1, column=1, padx=(4, 0), pady=2, sticky="ew")
+        quick_grid.columnconfigure(0, weight=1)
+        quick_grid.columnconfigure(1, weight=1)
+
+        # Big Action Buttons
+        self.phone_arm_btn = ctk.CTkButton(
+            self.phone_panel,
+            text="🚀 START PHONE AUTOPILOT\n(Laya + Jev Fusion)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#00d26a",
+            hover_color="#00b058",
+            text_color="#000000",
+            height=48,
+            command=self._toggle_phone_autopilot,
+        )
+        self.phone_arm_btn.pack(fill="x", padx=pad_x, pady=(6, 6))
+
+        self.phone_stop_btn = ctk.CTkButton(
+            self.phone_panel,
+            text="🛑 STOP AUTOPILOT [ESC]",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#ff2a55",
+            hover_color="#d61f43",
+            text_color="#ffffff",
+            height=36,
+            command=self.emergency_stop,
+        )
+        self.phone_stop_btn.pack(fill="x", padx=pad_x, pady=(0, 8))
+
+        phone_tip = ctk.CTkLabel(
+            self.phone_panel,
+            text="💡 Interactive Touch Active:\nClick anywhere on the phone video screen to tap!",
+            font=ctk.CTkFont(size=10),
+            text_color="#70758a",
+            justify="center",
+        )
+        phone_tip.pack(fill="x", padx=pad_x, pady=(4, 0))
+
+    # --- 2. PC CONTROL PANEL ---
+    def _build_pc_control_panel(self, parent):
+        self.pc_panel = ctk.CTkFrame(parent, fg_color="transparent")
+        pad_x = 15
+
+        sec1_lbl = ctk.CTkLabel(
+            self.pc_panel,
+            text="PC GAME PROFILE",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#00ffcc",
+        )
+        sec1_lbl.pack(anchor="w", padx=pad_x, pady=(4, 2))
 
         self.profile_selector = ctk.CTkOptionMenu(
-            parent,
+            self.pc_panel,
             values=self._get_profile_dropdown_values(),
             command=self._on_profile_selected,
             fg_color="#1a1c26",
@@ -153,9 +442,8 @@ class GamePilotHUD(ctk.CTk):
         )
         self.profile_selector.pack(fill="x", padx=pad_x, pady=(0, 6))
 
-        # Action Keys Preview Badge
         self.actions_preview_lbl = ctk.CTkLabel(
-            parent,
+            self.pc_panel,
             text=self._format_actions_preview(self.core.current_profile),
             font=ctk.CTkFont(size=10),
             text_color="#70758a",
@@ -164,9 +452,9 @@ class GamePilotHUD(ctk.CTk):
         )
         self.actions_preview_lbl.pack(anchor="w", padx=pad_x, pady=(0, 8))
 
-        # + Add Custom Profile Button
+        # Add Custom Profile Button
         new_prof_btn = ctk.CTkButton(
-            parent,
+            self.pc_panel,
             text="➕ Create Custom Game Profile...",
             font=ctk.CTkFont(size=11, weight="bold"),
             fg_color="#1a1c28",
@@ -177,21 +465,16 @@ class GamePilotHUD(ctk.CTk):
         )
         new_prof_btn.pack(fill="x", padx=pad_x, pady=(0, 10))
 
-        # Separator
-        ctk.CTkFrame(parent, height=1, fg_color="#1f2230").pack(
-            fill="x", padx=pad_x, pady=3
-        )
-
-        # 2. Player Avatar Calibration & Screen Snapping
+        # Window Snapping
         sec2_lbl = ctk.CTkLabel(
-            parent,
-            text="SCREEN & AVATAR CALIBRATION",
+            self.pc_panel,
+            text="SCREEN & WINDOW SNAPPING",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#00ffcc",
         )
-        sec2_lbl.pack(anchor="w", padx=pad_x, pady=(8, 4))
+        sec2_lbl.pack(anchor="w", padx=pad_x, pady=(6, 4))
 
-        win_row = ctk.CTkFrame(parent, fg_color="transparent")
+        win_row = ctk.CTkFrame(self.pc_panel, fg_color="transparent")
         win_row.pack(fill="x", padx=pad_x, pady=(0, 5))
 
         self.window_dropdown = ctk.CTkOptionMenu(
@@ -202,9 +485,7 @@ class GamePilotHUD(ctk.CTk):
             dropdown_fg_color="#1a1c26",
             width=220,
         )
-        self.window_dropdown.pack(
-            side="left", fill="x", expand=True, padx=(0, 5)
-        )
+        self.window_dropdown.pack(side="left", fill="x", expand=True, padx=(0, 5))
 
         refresh_win_btn = ctk.CTkButton(
             win_row,
@@ -218,7 +499,7 @@ class GamePilotHUD(ctk.CTk):
         refresh_win_btn.pack(side="right")
 
         snap_btn = ctk.CTkButton(
-            parent,
+            self.pc_panel,
             text="🎯 Focus & Snap Window",
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color="#1a1c26",
@@ -230,7 +511,7 @@ class GamePilotHUD(ctk.CTk):
         snap_btn.pack(fill="x", padx=pad_x, pady=(0, 6))
 
         # Player Avatar Calibrator Row
-        calib_row = ctk.CTkFrame(parent, fg_color="transparent")
+        calib_row = ctk.CTkFrame(self.pc_panel, fg_color="transparent")
         calib_row.pack(fill="x", padx=pad_x, pady=(0, 6))
 
         self.calib_btn = ctk.CTkButton(
@@ -258,57 +539,17 @@ class GamePilotHUD(ctk.CTk):
         clear_calib_btn.pack(side="right")
 
         self.coords_lbl = ctk.CTkLabel(
-            parent,
+            self.pc_panel,
             text="Region: Auto Center (800x400)",
             font=ctk.CTkFont(size=10),
             text_color="#70758a",
         )
         self.coords_lbl.pack(anchor="w", padx=pad_x, pady=(0, 8))
 
-        # Separator
-        ctk.CTkFrame(parent, height=1, fg_color="#1f2230").pack(
-            fill="x", padx=pad_x, pady=3
-        )
-
-        # 3. Action Buttons & Start Configuration
-        sec3_lbl = ctk.CTkLabel(
-            parent,
-            text="PILOT ENGAGEMENT",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#00ffcc",
-        )
-        sec3_lbl.pack(anchor="w", padx=pad_x, pady=(8, 4))
-
-        opt_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        opt_frame.pack(fill="x", padx=pad_x, pady=(0, 6))
-
-        self.delay_switch = ctk.CTkSwitch(
-            opt_frame,
-            text="3s Focus Delay",
-            font=ctk.CTkFont(size=11),
-            text_color="#c0c0c0",
-            progress_color="#00ffcc",
-        )
-        self.delay_switch.deselect()
-        self.delay_switch.pack(side="left")
-
-        self.hotkey_selector = ctk.CTkOptionMenu(
-            opt_frame,
-            values=["No Hotkey (Click Only)", "Enter", "F2", "Tab", "F8"],
-            font=ctk.CTkFont(size=10),
-            width=135,
-            height=24,
-            fg_color="#1a1c26",
-            button_color="#2b2f42",
-            dropdown_fg_color="#1a1c26",
-            command=self._on_hotkey_change,
-        )
-        self.hotkey_selector.pack(side="right")
-
-        # Big Green Start Button
-        self.arm_btn = ctk.CTkButton(
-            parent,
-            text="🚀 START AUTOPILOT\n(Jev System One Play)",
+        # PC Autopilot Buttons
+        self.pc_arm_btn = ctk.CTkButton(
+            self.pc_panel,
+            text="🚀 START PC AUTOPILOT\n(Jev System One Play)",
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#00d26a",
             hover_color="#00b058",
@@ -316,48 +557,110 @@ class GamePilotHUD(ctk.CTk):
             height=48,
             command=lambda: self.toggle_pilot(armed=True),
         )
-        self.arm_btn.pack(fill="x", padx=pad_x, pady=(0, 6))
+        self.pc_arm_btn.pack(fill="x", padx=pad_x, pady=(6, 6))
 
-        # Reset / Replay Button
-        self.reset_btn = ctk.CTkButton(
-            parent,
-            text="🔄 Reset Game Arena",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color="#1f2230",
-            hover_color="#2e3146",
-            text_color="#ffffff",
-            height=28,
-            command=self._on_reset_game,
-        )
-        self.reset_btn.pack(fill="x", padx=pad_x, pady=(0, 6))
-
-        # Big Red Emergency Stop Button
-        self.stop_btn = ctk.CTkButton(
-            parent,
-            text="🛑 STOP / HALT [ESC]",
+        self.pc_stop_btn = ctk.CTkButton(
+            self.pc_panel,
+            text="🛑 STOP AUTOPILOT [ESC]",
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color="#ff2a55",
             hover_color="#d61f43",
             text_color="#ffffff",
-            height=38,
+            height=36,
             command=self.emergency_stop,
         )
-        self.stop_btn.pack(fill="x", padx=pad_x, pady=(0, 8))
+        self.pc_stop_btn.pack(fill="x", padx=pad_x, pady=(0, 8))
 
-        notice_lbl = ctk.CTkLabel(
-            parent,
-            text="💡 Tip: Works on ANY game! Switch profiles or\ncreate custom ones for Roblox, Subway, etc.",
-            font=ctk.CTkFont(size=10),
-            text_color="#70758a",
-            justify="center",
+    # --- 3. DINO ARENA CONTROL PANEL ---
+    def _build_dino_control_panel(self, parent):
+        self.dino_panel = ctk.CTkFrame(parent, fg_color="transparent")
+        pad_x = 15
+
+        dino_title = ctk.CTkLabel(
+            self.dino_panel,
+            text="NATIVE DINO RUNNER ARENA",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#00ffcc",
         )
-        notice_lbl.pack(fill="x", padx=pad_x, pady=(2, 4))
+        dino_title.pack(anchor="w", padx=pad_x, pady=(4, 6))
+
+        dino_desc = ctk.CTkLabel(
+            self.dino_panel,
+            text="Instant 60 FPS offline benchmark playground.\nTest Jev spatial reflex arc and obstacle dodging.",
+            font=ctk.CTkFont(size=11),
+            text_color="#80859c",
+            justify="left",
+            wraplength=310,
+        )
+        dino_desc.pack(anchor="w", padx=pad_x, pady=(0, 10))
+
+        self.dino_arm_btn = ctk.CTkButton(
+            self.dino_panel,
+            text="🚀 START DINO AUTOPILOT\n(Jev System One)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#00d26a",
+            hover_color="#00b058",
+            text_color="#000000",
+            height=48,
+            command=lambda: self.toggle_pilot(armed=True),
+        )
+        self.dino_arm_btn.pack(fill="x", padx=pad_x, pady=(6, 6))
+
+        self.dino_reset_btn = ctk.CTkButton(
+            self.dino_panel,
+            text="🔄 Reset Dino Arena",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#1f2230",
+            hover_color="#2e3146",
+            text_color="#ffffff",
+            height=30,
+            command=self._on_reset_game,
+        )
+        self.dino_reset_btn.pack(fill="x", padx=pad_x, pady=(0, 6))
+
+        self.dino_stop_btn = ctk.CTkButton(
+            self.dino_panel,
+            text="🛑 STOP DINO [ESC]",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#ff2a55",
+            hover_color="#d61f43",
+            text_color="#ffffff",
+            height=36,
+            command=self.emergency_stop,
+        )
+        self.dino_stop_btn.pack(fill="x", padx=pad_x, pady=(0, 8))
+
+    def _show_active_control_panel(self, mode_str: str):
+        self.phone_panel.pack_forget()
+        self.pc_panel.pack_forget()
+        self.dino_panel.pack_forget()
+
+        if "Phone" in mode_str:
+            self.phone_panel.pack(fill="both", expand=True)
+        elif "PC" in mode_str:
+            self.pc_panel.pack(fill="both", expand=True)
+        else:
+            self.dino_panel.pack(fill="both", expand=True)
+
+    def _on_mode_switched(self, choice: str):
+        self._show_active_control_panel(choice)
+        if "Phone" in choice:
+            self.arena_tab.set("📱 Phone Pilot (ADB Mirror)")
+            self._on_arena_tab_changed("Phone")
+        elif "PC" in choice:
+            self.arena_tab.set("🖥️ Universal Screen Grabber (Any Game)")
+            self._on_arena_tab_changed("Universal")
+        else:
+            self.arena_tab.set("🎮 Native Dino Arena (Instant Play)")
+            self._on_arena_tab_changed("Native")
+
+    # =========================================================================
+    # RIGHT VIEWPORT & TELEMETRY DECK
+    # =========================================================================
 
     def _build_right_viewport(self, parent):
         # 1. Viewport Card
-        viewport_card = ctk.CTkFrame(
-            parent, fg_color="#12131c", corner_radius=10
-        )
+        viewport_card = ctk.CTkFrame(parent, fg_color="#12131c", corner_radius=10)
         viewport_card.pack(fill="both", expand=True, padx=0, pady=(0, 10))
 
         vp_top = ctk.CTkFrame(viewport_card, fg_color="transparent", height=38)
@@ -366,8 +669,9 @@ class GamePilotHUD(ctk.CTk):
         self.arena_tab = ctk.CTkSegmentedButton(
             vp_top,
             values=[
-                "🎮 Native Dino Arena (Instant Play)",
+                "📱 Phone Pilot (ADB Mirror)",
                 "🖥️ Universal Screen Grabber (Any Game)",
+                "🎮 Native Dino Arena (Instant Play)",
             ],
             command=self._on_arena_tab_changed,
             fg_color="#1a1c26",
@@ -378,12 +682,13 @@ class GamePilotHUD(ctk.CTk):
             text_color="#ffffff",
             font=ctk.CTkFont(size=11, weight="bold"),
         )
-        self.arena_tab.set("🎮 Native Dino Arena (Instant Play)")
+        init_tab = "📱 Phone Pilot (ADB Mirror)" if self.phone_adb.is_connected else "🎮 Native Dino Arena (Instant Play)"
+        self.arena_tab.set(init_tab)
         self.arena_tab.pack(side="left")
 
         self.fps_lbl = ctk.CTkLabel(
             vp_top,
-            text="60.0 FPS // Active Arena",
+            text="30.0 FPS // Active Arena",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#70758a",
         )
@@ -392,24 +697,30 @@ class GamePilotHUD(ctk.CTk):
         self.content_container = ctk.CTkFrame(
             viewport_card, fg_color="#08090d", corner_radius=6
         )
-        self.content_container.pack(
-            fill="both", expand=True, padx=15, pady=(0, 15)
-        )
+        self.content_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
 
         # Native Dino Arena Canvas
         self.embedded_arena = EmbeddedDinoArena(
             self.content_container, width=740, height=270
         )
-        self.embedded_arena.pack(fill="both", expand=True, padx=10, pady=10)
-        self.embedded_arena.start()
 
-        # External Universal Video Label (for ANY game)
+        # Video Canvas (Used for both Phone Mirror and PC Screen Grabber)
         self.video_lbl = ctk.CTkLabel(
             self.content_container,
-            text="[ Universal Screen Grabber Offline // Click 'Focus & Snap Window' then 'Start Autopilot' ]",
+            text="[ Initializing Video Stream... ]",
             font=ctk.CTkFont(size=13),
             text_color="#53586d",
         )
+        # Bind interactive touch click
+        self.video_lbl.bind("<Button-1>", self._on_video_click)
+
+        if "Phone" in init_tab:
+            self.video_lbl.pack(fill="both", expand=True)
+            self.active_arena_mode = "phone"
+        else:
+            self.embedded_arena.pack(fill="both", expand=True, padx=10, pady=10)
+            self.embedded_arena.start()
+            self.active_arena_mode = "native"
 
         # 2. Bottom Jev Brain Telemetry Deck
         telemetry_deck = ctk.CTkFrame(
@@ -422,9 +733,7 @@ class GamePilotHUD(ctk.CTk):
         deck_grid.pack(fill="both", expand=True, padx=15, pady=12)
 
         # Col 1: Action Badge & Urgency Gauge
-        col1 = ctk.CTkFrame(
-            deck_grid, fg_color="#1a1c26", corner_radius=8, width=220
-        )
+        col1 = ctk.CTkFrame(deck_grid, fg_color="#1a1c26", corner_radius=8, width=220)
         col1.pack(side="left", fill="y", padx=(0, 10))
         col1.pack_propagate(False)
 
@@ -439,7 +748,7 @@ class GamePilotHUD(ctk.CTk):
         self.action_badge = ctk.CTkLabel(
             col1,
             text="WAIT / STANDBY",
-            font=ctk.CTkFont(size=17, weight="bold"),
+            font=ctk.CTkFont(size=16, weight="bold"),
             text_color="#00ffcc",
             fg_color="#12131c",
             corner_radius=6,
@@ -449,7 +758,7 @@ class GamePilotHUD(ctk.CTk):
 
         urg_title = ctk.CTkLabel(
             col1,
-            text="THREAT / URGENCY GAUGE",
+            text="THREAT URGENCY / STRATEGY",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color="#70758a",
         )
@@ -463,55 +772,61 @@ class GamePilotHUD(ctk.CTk):
 
         self.urgency_pct = ctk.CTkLabel(
             col1,
-            text="0% (Horizon Clear)",
-            font=ctk.CTkFont(size=10),
-            text_color="#70758a",
+            text="0% (Standby)",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#00ffcc",
         )
         self.urgency_pct.pack(anchor="w", padx=12)
 
-        # Col 2: Tactical Telemetry Grid
+        # Col 2: Spatial & Threat Tracking
         col2 = ctk.CTkFrame(deck_grid, fg_color="#1a1c26", corner_radius=8)
         col2.pack(side="left", fill="both", expand=True, padx=(0, 10))
 
+        c2_title = ctk.CTkLabel(
+            col2,
+            text="SPATIAL RECOGNITION & PERCEPTION",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color="#70758a",
+        )
+        c2_title.pack(anchor="w", padx=12, pady=(8, 2))
+
         grid_inner = ctk.CTkFrame(col2, fg_color="transparent")
-        grid_inner.pack(fill="both", expand=True, padx=12, pady=10)
+        grid_inner.pack(fill="both", expand=True, padx=12, pady=0)
 
         self.score_lbl = ctk.CTkLabel(
             grid_inner,
-            text="Profile: 🦖 Chrome Dino",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#00ffcc",
+            text="Session: Ready",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#ffffff",
         )
         self.score_lbl.pack(anchor="w", pady=1)
 
         self.obs_lbl = ctk.CTkLabel(
             grid_inner,
-            text="Threat / Target: None Detected",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#e0e0e0",
+            text="Target / Phase: Standby",
+            font=ctk.CTkFont(size=11),
+            text_color="#00ffcc",
         )
         self.obs_lbl.pack(anchor="w", pady=1)
 
         self.dist_lbl = ctk.CTkLabel(
             grid_inner,
-            text="Distance / Impact: -- px (-- ms)",
+            text="Telemetry: Live Stream Ready",
             font=ctk.CTkFont(size=11),
-            text_color="#70758a",
+            text_color="#c0c0c0",
         )
         self.dist_lbl.pack(anchor="w", pady=1)
 
         self.speed_lbl = ctk.CTkLabel(
             grid_inner,
-            text="Tracking: Auto Contour / Template",
+            text="Input Mode: Physical ADB Injection (Microsecond)",
             font=ctk.CTkFont(size=11),
             text_color="#70758a",
         )
         self.speed_lbl.pack(anchor="w", pady=1)
 
         # Col 3: Jev Brain Intuition & Counters
-        col3 = ctk.CTkFrame(
-            deck_grid, fg_color="#1a1c26", corner_radius=8, width=230
-        )
+        col3 = ctk.CTkFrame(deck_grid, fg_color="#1a1c26", corner_radius=8, width=230)
         col3.pack(side="right", fill="y", padx=0)
         col3.pack_propagate(False)
 
@@ -533,7 +848,7 @@ class GamePilotHUD(ctk.CTk):
 
         self.counters_lbl = ctk.CTkLabel(
             col3,
-            text="Total Maneuvers:\nActions: 0",
+            text="Total Actions: 0",
             font=ctk.CTkFont(size=11),
             text_color="#e0e0e0",
             justify="left",
@@ -542,20 +857,22 @@ class GamePilotHUD(ctk.CTk):
 
         self.fast_fall_lbl = ctk.CTkLabel(
             col3,
-            text="Universal Schema: ACTIVE",
+            text="Neural Latency: <25ms",
             font=ctk.CTkFont(size=10),
             text_color="#00d26a",
         )
         self.fast_fall_lbl.pack(anchor="w", padx=12)
 
+    # =========================================================================
+    # MINI FLOATING HUD LAYOUT
+    # =========================================================================
+
     def _build_mini_layout(self):
-        """Compact floating bar layout for playing full screen games."""
         self.mini_container = ctk.CTkFrame(self, fg_color="#0e1017")
 
         row = ctk.CTkFrame(self.mini_container, fg_color="transparent")
         row.pack(fill="both", expand=True, padx=10, pady=8)
 
-        # Profile & Action
         info_col = ctk.CTkFrame(row, fg_color="transparent")
         info_col.pack(side="left", fill="both", expand=True)
 
@@ -581,7 +898,6 @@ class GamePilotHUD(ctk.CTk):
         self.mini_urgency_bar.set(0.0)
         self.mini_urgency_bar.pack(fill="x", pady=(2, 0))
 
-        # Controls
         ctrl_col = ctk.CTkFrame(row, fg_color="transparent")
         ctrl_col.pack(side="right", padx=(10, 0))
 
@@ -594,7 +910,7 @@ class GamePilotHUD(ctk.CTk):
             text_color="#000000",
             width=70,
             height=30,
-            command=lambda: self.toggle_pilot(armed=True),
+            command=self._on_mini_arm_click,
         )
         self.mini_arm_btn.pack(side="top", pady=(0, 4))
 
@@ -612,7 +928,6 @@ class GamePilotHUD(ctk.CTk):
 
     def _toggle_mini_mode(self):
         if not self.is_mini_mode:
-            # Switch to Mini Floating Bar
             self.is_mini_mode = True
             self.main_container.pack_forget()
             self.header_frame.pack_forget()
@@ -620,13 +935,339 @@ class GamePilotHUD(ctk.CTk):
             self.geometry("380x105")
             self.attributes("-topmost", True)
         else:
-            # Switch to Full HUD
             self.is_mini_mode = False
             self.mini_container.pack_forget()
             self.header_frame.pack(fill="x", side="top")
             self.main_container.pack(fill="both", expand=True, padx=15, pady=15)
-            self.geometry("1160x760")
+            self.geometry("1180x780")
             self.attributes("-topmost", False)
+
+    def _on_mini_arm_click(self):
+        if self.active_arena_mode == "phone":
+            self._toggle_phone_autopilot()
+        else:
+            self.toggle_pilot(armed=True)
+
+    # =========================================================================
+    # TAB & ARENA SWITCHING
+    # =========================================================================
+
+    def _on_arena_tab_changed(self, choice: str):
+        if "Native" in choice:
+            self.active_arena_mode = "native"
+            self.video_lbl.pack_forget()
+            self.embedded_arena.pack(fill="both", expand=True, padx=10, pady=10)
+            self.fps_lbl.configure(text="60.0 FPS // Native Dino Arena")
+            self.mode_selector.set("🎮 Dino Arena")
+            self._show_active_control_panel("Dino Arena")
+        elif "Phone" in choice:
+            self.active_arena_mode = "phone"
+            self.embedded_arena.pack_forget()
+            self.video_lbl.pack(fill="both", expand=True)
+            self.fps_lbl.configure(text="30.0 FPS // Phone Mirror Active")
+            self.mode_selector.set("📱 Phone (ADB)")
+            self._show_active_control_panel("Phone")
+            self._start_phone_preview()
+            self._update_phone_device_info()
+        else:
+            self.active_arena_mode = "external"
+            self.embedded_arena.pack_forget()
+            self.video_lbl.pack(fill="both", expand=True)
+            self.fps_lbl.configure(text="0.0 FPS // PC Screen Grabber")
+            self.mode_selector.set("🖥️ PC Window")
+            self._show_active_control_panel("PC Window")
+
+    # =========================================================================
+    # PHONE PILOT & LIVE TOUCH MIRROR
+    # =========================================================================
+
+    def _refresh_phone_connection(self):
+        self.phone_adb._check_connection()
+        self._update_phone_device_info()
+
+    def _update_phone_device_info(self):
+        if self.phone_adb.is_connected:
+            # Query brand & model
+            brand = "Samsung"
+            model = "Galaxy"
+            try:
+                cmd = self.phone_adb._cmd_prefix() + ["shell", "getprop", "ro.product.model"]
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+                model = res.stdout.strip() or "Android Device"
+                cmd2 = self.phone_adb._cmd_prefix() + ["shell", "getprop", "ro.product.brand"]
+                res2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=2)
+                brand = res2.stdout.strip().capitalize() or "Android"
+            except Exception:
+                pass
+
+            w, h = self.phone_adb.screen_width, self.phone_adb.screen_height
+            self.phone_dev_lbl.configure(
+                text=f"📱 {brand} {model}", text_color="#ffffff"
+            )
+            self.phone_status_lbl.configure(
+                text=f"🟢 CONNECTED: {self.phone_adb.device_serial} ({w}x{h})",
+                text_color="#00ffcc",
+            )
+            self._update_phone_app_badge()
+        else:
+            self.phone_dev_lbl.configure(
+                text="📱 No Device Detected", text_color="#ff2a55"
+            )
+            self.phone_status_lbl.configure(
+                text="🔴 Connect phone via USB with USB Debugging enabled",
+                text_color="#ff2a55",
+            )
+            self.phone_app_lbl.configure(text="App: No Device", text_color="#70758a")
+
+    def _update_phone_app_badge(self):
+        if not self.phone_adb.is_connected:
+            return
+        pkg = self.phone_adb.detect_foreground_package() or "Homescreen / Idle"
+        self.phone_current_pkg = pkg
+        clean_pkg = pkg.split("/")[-1].replace("com.", "").replace("at.ner.", "")
+        self.phone_app_lbl.configure(text=f"App: {clean_pkg[:28]}")
+
+        # Auto select matching profile if enabled
+        if self.phone_auto_detect_enabled:
+            det_prof_id, _ = self.phone_adb.auto_detect_game_profile()
+            new_p = self.phone_profile_mgr.get_profile(det_prof_id)
+            if new_p and new_p.id != self.phone_profile.id:
+                self.phone_profile = new_p
+                self._sync_phone_profile_dropdown(new_p.id)
+
+    def _sync_phone_profile_dropdown(self, prof_id: str):
+        for val in self.phone_prof_selector._values:
+            if prof_id in val:
+                self.phone_prof_selector.set(val)
+                break
+
+    def _on_toggle_phone_auto_detect(self):
+        self.phone_auto_detect_enabled = bool(self.phone_auto_switch.get())
+
+    def _on_phone_profile_selected(self, choice: str):
+        match = re.search(r"\((.*?)\)", choice)
+        prof_id = match.group(1) if match else "mobile_universal"
+        p = self.phone_profile_mgr.get_profile(prof_id)
+        if p:
+            self.phone_profile = p
+            self.score_lbl.configure(text=f"Profile: {p.name}")
+
+    def _dispatch_quick_touch(self, action_name: str):
+        if not self.phone_adb.is_connected:
+            return
+        try:
+            if action_name == "tap_center":
+                self.phone_adb.tap(
+                    self.phone_adb.screen_width // 2, self.phone_adb.screen_height // 2
+                )
+            else:
+                self.phone_adb.dispatch_action(action_name)
+            self.phone_total_actions += 1
+            self.action_badge.configure(text=action_name.upper())
+            self.counters_lbl.configure(text=f"Total Actions: {self.phone_total_actions}")
+        except Exception as e:
+            pass
+
+    def _on_video_click(self, event):
+        """Interactive touch mirror: Clicking on the video frame sends physical tap to the phone!"""
+        if self.active_arena_mode != "phone" or not self.phone_adb.is_connected:
+            return
+
+        off_x, off_y, disp_w, disp_h = self.phone_img_rect
+        click_x = event.x - off_x
+        click_y = event.y - off_y
+
+        if 0 <= click_x <= disp_w and 0 <= click_y <= disp_h and disp_w > 0 and disp_h > 0:
+            norm_x = click_x / disp_w
+            norm_y = click_y / disp_h
+            phone_w, phone_h = self.phone_rendered_dim
+            real_x = int(norm_x * phone_w)
+            real_y = int(norm_y * phone_h)
+
+            # Fire microsecond tap via ADB
+            self.phone_adb.tap(real_x, real_y)
+            self.phone_total_actions += 1
+
+            self.action_badge.configure(text=f"TOUCH ({real_x},{real_y})")
+            self.counters_lbl.configure(text=f"Total Actions: {self.phone_total_actions}")
+
+    def _start_phone_preview(self):
+        if self._phone_preview_running:
+            return
+        self._phone_preview_running = True
+        self._phone_preview_tick()
+
+    def _phone_preview_tick(self):
+        if not self._phone_preview_running:
+            return
+
+        # If phone pilot is running, the pilot worker already updates frames
+        if not self.is_phone_pilot_running and self.active_arena_mode == "phone":
+            frame = self.phone_adb.get_latest_frame()
+            if frame is not None:
+                self._render_frame_to_viewport(frame)
+
+        self.after(33, self._phone_preview_tick)
+
+    def _toggle_phone_autopilot(self):
+        if self.is_phone_pilot_running:
+            self.emergency_stop()
+        else:
+            if not self.phone_adb.is_connected:
+                self.phone_status_lbl.configure(
+                    text="❌ Cannot start: No device connected!", text_color="#ff2a55"
+                )
+                return
+            self._start_phone_pilot_worker()
+
+    def _start_phone_pilot_worker(self):
+        self.is_phone_pilot_running = True
+        self.phone_arm_btn.configure(
+            text="🛑 STOP PHONE AUTOPILOT\n(Running Laya + Jev)",
+            fg_color="#ff2a55",
+            hover_color="#d61f43",
+            text_color="#ffffff",
+        )
+        self.mini_arm_btn.configure(text="🛑 STOP", fg_color="#ff2a55")
+        self.status_badge.configure(
+            text=f"● AUTOPILOT: {self.phone_profile.name[:18].upper()}",
+            text_color="#000000",
+            fg_color="#00d26a",
+        )
+
+        def worker():
+            last_act_time = 0.0
+            fps_t0 = time.time()
+            f_count = 0
+            curr_fps = 30.0
+
+            while self.is_phone_pilot_running:
+                frame = self.phone_adb.get_fresh_frame(timeout=1.0)
+                if frame is None:
+                    time.sleep(0.02)
+                    continue
+
+                f_count += 1
+                if time.time() - fps_t0 >= 1.0:
+                    curr_fps = f_count / (time.time() - fps_t0)
+                    f_count = 0
+                    fps_t0 = time.time()
+
+                # Check auto game switch
+                if self.phone_auto_detect_enabled:
+                    now_t = time.time()
+                    if now_t - self._last_phone_pkg_check > 2.5:
+                        self._last_phone_pkg_check = now_t
+                        det_id, pkg = self.phone_adb.auto_detect_game_profile()
+                        if pkg and pkg != self.phone_current_pkg and "launcher" not in pkg.lower():
+                            self.phone_current_pkg = pkg
+                            new_p = self.phone_profile_mgr.get_profile(det_id)
+                            if new_p and new_p.id != self.phone_profile.id:
+                                self.phone_profile = new_p
+                                self.after(0, self._sync_phone_profile_dropdown, new_p.id)
+
+                # 1. Perception
+                scene: UniversalSceneState = self.phone_vision.analyze_frame(
+                    frame, self.phone_profile
+                )
+
+                # 2. Decision
+                decision = self.phone_brain.get_action(self.phone_profile, scene)
+                action_name = decision.get("action", "wait")
+
+                # 3. Action Dispatch
+                now = time.time()
+                cooldown = 0.25 if "solitaire" in self.phone_profile.id else (1.2 if "clash" in self.phone_profile.id else 0.18)
+                if action_name not in ["wait", "maintain_course", "stand_idle"] and (now - last_act_time > cooldown):
+                    try:
+                        self.phone_adb.dispatch_action(
+                            action_name, target_coords=decision.get("target_coords")
+                        )
+                        self.phone_total_actions += 1
+                        last_act_time = now
+                    except Exception:
+                        pass
+
+                # 4. Render overlay
+                annotated = self.phone_vision.render_debug_overlay(
+                    frame, scene, self.phone_profile
+                )
+
+                # 5. Push telemetry
+                telemetry = {
+                    "frame": annotated,
+                    "scene": scene,
+                    "decision": decision,
+                    "action": action_name,
+                    "actions_count": self.phone_total_actions,
+                    "profile": self.phone_profile,
+                    "fps": curr_fps,
+                }
+                self.after(0, self._render_phone_telemetry_ui, telemetry)
+                time.sleep(0.01)
+
+        self._phone_worker_thread = threading.Thread(target=worker, daemon=True)
+        self._phone_worker_thread.start()
+
+    def _render_phone_telemetry_ui(self, data: dict):
+        if not self.is_phone_pilot_running:
+            return
+
+        fps = data.get("fps", 30.0)
+        self.fps_lbl.configure(text=f"{fps:.1f} FPS // Phone Pilot Active")
+
+        frame = data.get("frame")
+        if frame is not None and self.active_arena_mode == "phone":
+            self._render_frame_to_viewport(frame)
+
+        decision = data.get("decision", {})
+        scene = data.get("scene")
+        prof = data.get("profile", self.phone_profile)
+        act = data.get("action", "wait").upper()
+
+        self.action_badge.configure(text=act)
+        self.mini_action_badge.configure(text=act)
+
+        urg = float(getattr(scene, "threat_urgency", 0.0))
+        self.urgency_bar.set(urg)
+        self.mini_urgency_bar.set(urg)
+        self.urgency_pct.configure(text=f"{int(urg * 100)}% Threat Urgency")
+
+        self.score_lbl.configure(text=f"Game: {prof.name}")
+        self.obs_lbl.configure(text=f"Action: {act} | Conf: {int(decision.get('confidence', 1.0)*100)}%")
+        self.dist_lbl.configure(text=f"Strategy: {decision.get('strategy', 'Adaptive')}")
+        self.counters_lbl.configure(text=f"Total Actions: {data.get('actions_count', 0)}")
+
+        lat = decision.get("latency_ms", 18.5)
+        src = decision.get("source", "Laya+Jev").upper()
+        self.brain_source_lbl.configure(text=f"{src} ({lat:.1f}ms)")
+
+    def _render_frame_to_viewport(self, frame: np.ndarray):
+        container_w = max(300, self.content_container.winfo_width())
+        container_h = max(200, self.content_container.winfo_height())
+
+        h, w = frame.shape[:2]
+        self.phone_rendered_dim = (w, h)
+
+        scale = min((container_w - 20) / w, (container_h - 20) / h)
+        new_w = max(50, int(w * scale))
+        new_h = max(50, int(h * scale))
+
+        # Record exact rendered geometry for touch mapping
+        off_x = max(0, (container_w - new_w) // 2)
+        off_y = max(0, (container_h - new_h) // 2)
+        self.phone_img_rect = (off_x, off_y, new_w, new_h)
+
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+        img_tk = ImageTk.PhotoImage(image=pil_img)
+        self.video_lbl.configure(image=img_tk, text="")
+        self.current_img_tk = img_tk
+
+    # =========================================================================
+    # PC PILOT & CALIBRATION
+    # =========================================================================
 
     def _get_profile_dropdown_values(self) -> list[str]:
         names = [p.name for p in self.core.profile_mgr.list_profiles()]
@@ -644,7 +1285,6 @@ class GamePilotHUD(ctk.CTk):
             self._open_new_profile_dialog()
             return
 
-        # Find matching profile
         for prof in self.core.profile_mgr.list_profiles():
             if prof.name == choice:
                 self.core.set_profile(prof.id)
@@ -653,16 +1293,11 @@ class GamePilotHUD(ctk.CTk):
                 )
                 self.score_lbl.configure(text=f"Profile: {prof.name}")
 
-                # If non-dino profile, switch automatically to Universal External Grabber
                 if prof.id != "runner_dino":
-                    self.arena_tab.set(
-                        "🖥️ Universal Screen Grabber (Any Game)"
-                    )
+                    self.arena_tab.set("🖥️ Universal Screen Grabber (Any Game)")
                     self._on_arena_tab_changed("Universal")
                     if prof.default_window_keyword:
-                        self.core.vision.snap_to_window(
-                            prof.default_window_keyword
-                        )
+                        self.core.vision.snap_to_window(prof.default_window_keyword)
                 break
 
     def _open_new_profile_dialog(self):
@@ -673,17 +1308,14 @@ class GamePilotHUD(ctk.CTk):
         )
 
     def _on_custom_profile_created(self, new_profile: GameProfile):
-        # Refresh dropdown values
         self.profile_selector.configure(values=self._get_profile_dropdown_values())
         self.profile_selector.set(new_profile.name)
         self._on_profile_selected(new_profile.name)
 
     def _calibrate_player_avatar(self):
-        """Grabs the current focal avatar to lock template tracking."""
         frame = self.core.vision.last_frame
         if frame is not None:
             h, w, _ = frame.shape
-            # Take candidate player region from left-center
             crop = frame[
                 int(h * 0.4) : int(h * 0.75), int(w * 0.1) : int(w * 0.35)
             ]
@@ -702,39 +1334,8 @@ class GamePilotHUD(ctk.CTk):
         )
         self.speed_lbl.configure(text="Tracking: Auto Contour Dynamics")
 
-    def _on_arena_tab_changed(self, choice: str):
-        if "Native" in choice:
-            self.active_arena_mode = "native"
-            self.video_lbl.pack_forget()
-            self.embedded_arena.pack(fill="both", expand=True, padx=10, pady=10)
-            self.fps_lbl.configure(text="60.0 FPS // Native Arena")
-        else:
-            self.active_arena_mode = "external"
-            self.embedded_arena.pack_forget()
-            self.video_lbl.pack(fill="both", expand=True)
-            self.fps_lbl.configure(text="0.0 FPS // Universal Capture")
-
     def _on_reset_game(self):
         self.embedded_arena.reset_game()
-
-    def _on_hotkey_change(self, choice: str):
-        if self._active_bound_key:
-            try:
-                self.unbind(self._active_bound_key)
-            except Exception:
-                pass
-            self._active_bound_key = None
-
-        key_map = {
-            "Enter": "<Return>",
-            "F2": "<F2>",
-            "Tab": "<Tab>",
-            "F8": "<F8>",
-        }
-        if choice in key_map:
-            seq = key_map[choice]
-            self.bind(seq, lambda e: self.toggle_pilot(armed=True))
-            self._active_bound_key = seq
 
     def _refresh_windows(self):
         titles = self.core.vision.list_windows()
@@ -744,17 +1345,9 @@ class GamePilotHUD(ctk.CTk):
             if any(
                 k in t.lower()
                 for k in [
-                    "dino",
-                    "edge",
-                    "chrome",
-                    "surf",
-                    "subway",
-                    "bluestack",
-                    "roblox",
-                    "minecraft",
-                    "steam",
-                    "osu",
-                    "aim",
+                    "dino", "edge", "chrome", "surf", "subway", "bluestack",
+                    "roblox", "minecraft", "steam", "osu", "aim", "solitaire",
+                    "balatro", "spire", "hearthstone",
                 ]
             )
         ]
@@ -767,7 +1360,7 @@ class GamePilotHUD(ctk.CTk):
 
     def _auto_detect_game_window(self):
         self._refresh_windows()
-        for keyword in ["dino", "t-rex", "edge", "chrome", "subway", "bluestack"]:
+        for keyword in ["solitaire", "balatro", "spire", "dino", "t-rex", "edge", "chrome"]:
             if self.core.vision.snap_to_window(keyword):
                 reg = self.core.vision.region
                 self.coords_lbl.configure(
@@ -783,18 +1376,13 @@ class GamePilotHUD(ctk.CTk):
                 self.coords_lbl.configure(
                     text=f"Snapped: {reg['left']},{reg['top']} ({reg['width']}x{reg['height']})"
                 )
-                # Switch tab to Universal Screen Grabber
                 self.arena_tab.set("🖥️ Universal Screen Grabber (Any Game)")
                 self._on_arena_tab_changed("Universal")
 
-                # Bring target window to foreground
                 try:
                     import pygetwindow as gw
-
                     wins = [
-                        w
-                        for w in gw.getAllWindows()
-                        if selected.lower() in w.title.lower()
+                        w for w in gw.getAllWindows() if selected.lower() in w.title.lower()
                     ]
                     if wins:
                         w = wins[0]
@@ -803,15 +1391,11 @@ class GamePilotHUD(ctk.CTk):
                 except Exception:
                     pass
             else:
-                self.coords_lbl.configure(
-                    text="Could not lock to window dimensions."
-                )
+                self.coords_lbl.configure(text="Could not lock to window dimensions.")
 
     def toggle_pilot(self, armed: bool):
-        if self.countdown_timer:
-            self.after_cancel(self.countdown_timer)
-            self.countdown_timer = None
-            self._update_status_idle()
+        if self.active_arena_mode == "phone":
+            self._toggle_phone_autopilot()
             return
 
         if self.active_arena_mode == "native":
@@ -819,37 +1403,11 @@ class GamePilotHUD(ctk.CTk):
                 self.embedded_arena.set_autopilot(False)
                 self._update_status_idle()
             else:
-                if self.delay_switch.get() == 1:
-                    self._start_countdown(3, mode="native")
-                else:
-                    self._engage_native()
+                self._engage_native()
         else:
             if self.core.is_running:
                 self.core.stop()
                 self._update_status_idle()
-            else:
-                if self.delay_switch.get() == 1:
-                    self._start_countdown(3, mode="external")
-                else:
-                    self._engage_external()
-
-    def _start_countdown(self, seconds_left: int, mode: str):
-        if seconds_left > 0:
-            txt = f"⏳ Starting in {seconds_left}s...\nGet ready!"
-            self.arm_btn.configure(text=txt, fg_color="#ff9900")
-            self.mini_arm_btn.configure(text=f"⏳ {seconds_left}s", fg_color="#ff9900")
-            self.status_badge.configure(
-                text=f"● COUNTDOWN {seconds_left}s",
-                text_color="#000000",
-                fg_color="#ff9900",
-            )
-            self.countdown_timer = self.after(
-                1000, lambda: self._start_countdown(seconds_left - 1, mode)
-            )
-        else:
-            self.countdown_timer = None
-            if mode == "native":
-                self._engage_native()
             else:
                 self._engage_external()
 
@@ -862,7 +1420,7 @@ class GamePilotHUD(ctk.CTk):
             text_color="#000000",
             fg_color="#00d26a",
         )
-        self.arm_btn.configure(
+        self.dino_arm_btn.configure(
             text="🛑 STOP AUTOPILOT\n(Click or press ESC)", fg_color="#ff2a55"
         )
         self.mini_arm_btn.configure(text="🛑 STOP", fg_color="#ff2a55")
@@ -874,7 +1432,7 @@ class GamePilotHUD(ctk.CTk):
             text_color="#000000",
             fg_color="#00d26a",
         )
-        self.arm_btn.configure(
+        self.pc_arm_btn.configure(
             text="🛑 STOP AUTOPILOT\n(Click or press ESC)", fg_color="#ff2a55"
         )
         self.mini_arm_btn.configure(text="🛑 STOP", fg_color="#ff2a55")
@@ -884,22 +1442,34 @@ class GamePilotHUD(ctk.CTk):
             self.after_cancel(self.countdown_timer)
             self.countdown_timer = None
 
+        self.is_phone_pilot_running = False
         self.embedded_arena.set_autopilot(False)
         self.core.stop()
         self._update_status_idle()
 
     def _update_status_idle(self):
-        if self.countdown_timer:
-            self.after_cancel(self.countdown_timer)
-            self.countdown_timer = None
         self.status_badge.configure(
             text="● SYSTEM STANDBY",
             text_color="#70758a",
             fg_color="#1a1c26",
         )
-        self.arm_btn.configure(
-            text="🚀 START AUTOPILOT\n(Jev System One Play)",
+        self.phone_arm_btn.configure(
+            text="🚀 START PHONE AUTOPILOT\n(Laya + Jev Fusion)",
             fg_color="#00d26a",
+            hover_color="#00b058",
+            text_color="#000000",
+        )
+        self.pc_arm_btn.configure(
+            text="🚀 START PC AUTOPILOT\n(Jev System One Play)",
+            fg_color="#00d26a",
+            hover_color="#00b058",
+            text_color="#000000",
+        )
+        self.dino_arm_btn.configure(
+            text="🚀 START DINO AUTOPILOT\n(Jev System One)",
+            fg_color="#00d26a",
+            hover_color="#00b058",
+            text_color="#000000",
         )
         self.mini_arm_btn.configure(text="▶ START", fg_color="#00d26a")
         self.action_badge.configure(
@@ -910,7 +1480,6 @@ class GamePilotHUD(ctk.CTk):
         self.mini_urgency_bar.set(0.0)
 
     def _on_embedded_telemetry(self, data: dict):
-        """Telemetry callback from embedded Dino arena."""
         state = data.get("state")
         decision = data.get("decision", {})
         score = data.get("score", 0)
@@ -919,25 +1488,14 @@ class GamePilotHUD(ctk.CTk):
         self.score_lbl.configure(
             text=f"Score: {str(score).zfill(5)} | High: {str(hi_score).zfill(5)}"
         )
-
         act = decision.get("action", "run_normal").upper()
         self.action_badge.configure(text=act)
         self.mini_action_badge.configure(text=act)
 
-        if act == "JUMP":
-            self.action_badge.configure(text_color="#ffffff", fg_color="#ff2a55")
-        elif act == "DUCK":
-            self.action_badge.configure(text_color="#ffffff", fg_color="#ff9900")
-        else:
-            self.action_badge.configure(text_color="#00ffcc", fg_color="#12131c")
-
         urg = float(decision.get("threat_score", 0.0))
         self.urgency_bar.set(urg)
         self.mini_urgency_bar.set(urg)
-
-        self.urgency_pct.configure(
-            text=f"{int(urg * 100)}% ({'CRITICAL THREAT' if urg > 0.75 else 'Approaching' if urg > 0.2 else 'Clear'})"
-        )
+        self.urgency_pct.configure(text=f"{int(urg * 100)}% Threat Urgency")
 
         if state and state.nearest_obstacle:
             obs = state.nearest_obstacle
@@ -956,32 +1514,18 @@ class GamePilotHUD(ctk.CTk):
         )
 
     def _on_telemetry_update(self, data: dict):
-        """Telemetry callback from universal pilot core."""
         self.after(0, self._render_telemetry_ui, data)
 
     def _render_telemetry_ui(self, data: dict):
+        if self.active_arena_mode != "external":
+            return
+
         self.fps_lbl.configure(
             text=f"{data['fps']} FPS // Universal Vision Active"
         )
-
         frame = data.get("frame")
-        if frame is not None and self.active_arena_mode == "external":
-            container_w = max(400, self.content_container.winfo_width())
-            container_h = max(200, self.content_container.winfo_height())
-
-            h, w, _ = frame.shape
-            scale = min(container_w / w, container_h / h)
-            new_w = max(50, int(w * scale))
-            new_h = max(50, int(h * scale))
-
-            resized = cv2.resize(
-                frame, (new_w, new_h), interpolation=cv2.INTER_AREA
-            )
-            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(rgb)
-            img_tk = ImageTk.PhotoImage(image=pil_img)
-            self.video_lbl.configure(image=img_tk, text="")
-            self.current_img_tk = img_tk
+        if frame is not None:
+            self._render_frame_to_viewport(frame)
 
         state = data.get("state")
         decision = data.get("decision", {})
@@ -996,7 +1540,6 @@ class GamePilotHUD(ctk.CTk):
         self.mini_urgency_bar.set(urg)
         self.urgency_pct.configure(text=f"{int(urg * 100)}% Threat Urgency")
 
-        # Telemetry fields for UniversalSceneState & Chess
         if hasattr(state, "fen"):
             turn = "White" if state.turn else "Black"
             self.obs_lbl.configure(text=f"Chess Turn: {turn} (Move {state.fullmove_number})")
@@ -1004,19 +1547,11 @@ class GamePilotHUD(ctk.CTk):
         elif hasattr(state, "threats") and state.threats:
             t = state.threats[0]
             self.obs_lbl.configure(text=f"Threat: {int(t.distance_to_player)}px away")
-            self.dist_lbl.configure(
-                text=f"Threat Box: ({t.x}, {t.y}) {t.w}x{t.h}px"
-            )
+            self.dist_lbl.configure(text=f"Threat Box: ({t.x}, {t.y}) {t.w}x{t.h}px")
         elif hasattr(state, "targets") and state.targets:
             tgt = state.targets[0]
             self.obs_lbl.configure(text=f"Target: ({tgt.click_x}, {tgt.click_y})")
             self.dist_lbl.configure(text="Aim Lock: Active")
-        elif hasattr(state, "nearest_obstacle") and state.nearest_obstacle:
-            obs = state.nearest_obstacle
-            self.obs_lbl.configure(text=f"Obstacle: {obs.obstacle_type.upper()}")
-            self.dist_lbl.configure(
-                text=f"Distance: {obs.distance_from_dino}px | Impact: {int(obs.time_to_impact_ms)}ms"
-            )
         else:
             self.obs_lbl.configure(text="Horizon / Target: Clear")
             self.dist_lbl.configure(text="Distance / Impact: --")
