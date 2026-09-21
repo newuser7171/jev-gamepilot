@@ -34,6 +34,7 @@ def resolve_vk(key_name: str) -> Optional[int]:
         "shift": 0x10,
         "ctrl": 0x11,
         "tab": 0x09,
+        "backspace": 0x08,
         "esc": 0x1B,
     }
     if k in special:
@@ -160,16 +161,24 @@ class InputController:
         if not self.is_enabled:
             return
 
+        mouse_pressed = False
         try:
             pyautogui.moveTo(int(x1), int(y1))
             time.sleep(0.02)
             pyautogui.mouseDown()
+            mouse_pressed = True
             time.sleep(0.04)
             pyautogui.moveTo(int(x2), int(y2), duration=duration_sec)
             time.sleep(0.04)
-            pyautogui.mouseUp()
         except Exception as e:
             print(f"[InputController] Drag error: {e}")
+        finally:
+            if mouse_pressed:
+                try:
+                    pyautogui.mouseUp()
+                except Exception:
+                    # The corner failsafe can also block mouseUp; always release.
+                    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
     def dispatch_action(
         self,
@@ -319,12 +328,20 @@ class InputController:
             self.press_key(0x20, duration_sec=0.12)
         elif "duck" in act or "slide" in act:
             self.press_key(0x28, duration_sec=0.25)
+        elif "use_place" in act:
+            self.right_click_at(vx + vw // 2, vy + vh // 2)
         elif "interact" in act or "use" in act:
             self.press_key(ord('E'), duration_sec=0.10)
         elif "attack_mine" in act:
             self.click_at(vx + vw // 2, vy + vh // 2)
-        elif "use_place" in act:
-            self.right_click_at(vx + vw // 2, vy + vh // 2)
+        elif act == "accelerate":
+            self.press_key(0x26, duration_sec=0.30)
+        elif act == "turn_left":
+            self.press_key(0x25, duration_sec=0.12)
+        elif act == "turn_right":
+            self.press_key(0x27, duration_sec=0.12)
+        elif act == "brake":
+            self.press_key(0x28, duration_sec=0.08)
 
         # 7. Fallback to generic key or target click
         else:
