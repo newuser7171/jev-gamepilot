@@ -158,9 +158,24 @@ class PhoneGamePilot:
                     else:
                         self.last_battle_launch_time = now
 
-                # Anti-Stall Watchdog: never idle longer than 2.8s in active gameplay
+                # Adaptive Max Idle Watchdog per Game Genre (Ensures Continuous Active Play for ALL Games)
+                if "earntodie" in self.profile.id:
+                    max_idle = 0.20  # Continuous gas pedal taps
+                elif "flappy" in self.profile.id:
+                    max_idle = 0.32  # Steady gravity buoyancy
+                elif "fifa" in self.profile.id:
+                    max_idle = 0.45  # Continuous sprint & pass
+                elif "fruit" in self.profile.id:
+                    max_idle = 0.75  # Active slice sweep across rising fruit
+                elif "runner" in self.profile.id or self.profile.category == "runner":
+                    max_idle = 1.10  # Active slide/jump to maintain momentum
+                elif "clash" in self.profile.id:
+                    max_idle = 2.20  # Elixir pacing
+                else:
+                    max_idle = 1.50  # General default
+
                 phase = getattr(scene, "game_phase", "")
-                if action_name in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > 2.8):
+                if action_name in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > max_idle):
                     if phase != "matchmaking":
                         if "clash" in self.profile.id:
                             if phase == "in_battle":
@@ -169,10 +184,26 @@ class PhoneGamePilot:
                                 action_name = "start_battle"
                             elif phase == "game_over":
                                 action_name = "confirm_ok"
+                        elif "earntodie" in self.profile.id:
+                            action_name = "accelerate"
+                        elif "fruit" in self.profile.id:
+                            action_name = "slice_target"
+                        elif "flappy" in self.profile.id:
+                            action_name = "flap"
+                        elif "fifa" in self.profile.id:
+                            action_name = "sprint_tackle" if (self.total_actions % 3 == 0) else "pass"
+                        elif "runner" in self.profile.id or self.profile.category == "runner":
+                            action_name = "slide" if (self.total_actions % 2 == 0) else "jump"
+                        elif "solar" in self.profile.id:
+                            action_name = "fire_laser"
+                        elif "bitlife" in self.profile.id:
+                            action_name = "age_up"
                         elif self.profile.actions:
                             action_name = self.profile.actions[0].name
 
-                cooldown = 1.3 if ("clash" in self.profile.id and action_name != "start_battle") else 0.16
+                cooldown = 1.3 if ("clash" in self.profile.id and action_name != "start_battle") else (
+                    0.10 if "earntodie" in self.profile.id else 0.16
+                )
                 if action_name not in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > cooldown):
                     self.adb.dispatch_action(action_name, target_coords=decision.get("target_coords"))
                     self.total_actions += 1

@@ -602,7 +602,41 @@ class UniversalBrain:
                 "target_coords": None,
             }
 
-        # 4. Imminent Hazard Collision (Strike Zone) for Runners & Platformers
+        # 4. EA Sports FC / FIFA Mobile
+        if profile.id == "mobile_fifa":
+            self._fifa_step = getattr(self, "_fifa_step", 0) + 1
+            if scene.threat_urgency > 0.65 or len(scene.threats) > 0:
+                act = "sprint_tackle"
+            elif self._fifa_step % 6 == 0:
+                act = "shoot_goal"
+            elif self._fifa_step % 3 == 0:
+                act = "through_pass"
+            elif self._fifa_step % 2 == 0:
+                act = "pass"
+            else:
+                act = "sprint_tackle"
+            return {
+                "action": act,
+                "threat_score": scene.threat_urgency,
+                "confidence": 0.94,
+                "latency_ms": 0.2,
+                "source": "fifa_dynamic_reflex",
+                "target_coords": None,
+            }
+
+        # 5. BitLife & Choice Simulators
+        if profile.id == "mobile_bitlife":
+            act = "primary_choice" if scene.targets else "age_up"
+            return {
+                "action": act,
+                "threat_score": 0.0,
+                "confidence": 0.96,
+                "latency_ms": 0.2,
+                "source": "bitlife_progression_reflex",
+                "target_coords": None,
+            }
+
+        # 6. Imminent Hazard Collision (Strike Zone) for Runners & Platformers
         if scene.threat_urgency >= 0.70 and scene.nearest_threat:
             t = scene.nearest_threat
             p_bottom = (scene.player.y + scene.player.h) if scene.player else 300

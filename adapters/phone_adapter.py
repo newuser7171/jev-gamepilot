@@ -343,7 +343,11 @@ class AdbController:
             if target_coords:
                 self.slice_target(target_coords[0], target_coords[1])
             else:
-                self.slice_target(self.screen_width // 2, self.screen_height // 2)
+                x1 = int(self.screen_width * 0.20)
+                y1 = int(self.screen_height * 0.72)
+                x2 = int(self.screen_width * 0.80)
+                y2 = int(self.screen_height * 0.42)
+                self.swipe(x1, y1, x2, y2, duration_ms=65)
 
         # 3. Precision tap-to-click target (Aim trainers, Fruit Ninja, Solar Smash)
         elif "tap_target" in act or "click_target" in act:
