@@ -490,7 +490,12 @@ class UniversalBrain:
         """
         # 1. Target Clicker / Fruit Ninja Slicing
         if (profile.category == "clicker" or "fruit" in profile.id or "solar" in profile.id) and scene.best_target:
-            action_name = "slice_target" if "fruit" in profile.id else ("fire_laser" if "solar" in profile.id else "click_target")
+            if "fruit" in profile.id:
+                action_name = "combo_slice" if len(scene.targets) >= 2 else "slice_target"
+            elif "solar" in profile.id:
+                action_name = "fire_laser" if scene.threat_urgency < 0.50 else "orbital_strike"
+            else:
+                action_name = "click_target"
             return {
                 "action": action_name,
                 "threat_score": 0.95,
@@ -552,10 +557,15 @@ class UniversalBrain:
 
                 self._last_clash_deploy = now
 
-                # If nearest threat is invading our territory, defend that lane!
+                # If nearest threat is invading our territory, defend that lane or central pocket!
                 if scene.nearest_threat and scene.threat_urgency > 0.40:
                     invader_x = scene.nearest_threat.click_x
-                    act = "deploy_card_left" if invader_x < 540 else "deploy_card_right"
+                    if 380 <= invader_x <= 700:
+                        act = "deploy_defense_center"
+                    elif invader_x < 380:
+                        act = "deploy_card_left"
+                    else:
+                        act = "deploy_card_right"
                     return {
                         "action": act,
                         "threat_score": scene.threat_urgency,
@@ -602,14 +612,20 @@ class UniversalBrain:
                 "target_coords": None,
             }
 
-        # 4. EA Sports FC / FIFA Mobile (Landscape)
+        # 4. EA Sports FC / FIFA Mobile (Landscape Pro Controls)
         if profile.id == "mobile_fifa":
             self._fifa_step = getattr(self, "_fifa_step", 0) + 1
             if scene.threat_urgency > 0.65 or len(scene.threats) > 0:
                 act = "sprint_tackle"
-            elif self._fifa_step % 7 == 0:
+            elif self._fifa_step % 9 == 0:
+                act = "finesse_shot"
+            elif self._fifa_step % 8 == 0:
                 act = "shoot_goal"
+            elif self._fifa_step % 6 == 0:
+                act = "skill_move"
             elif self._fifa_step % 5 == 0:
+                act = "dribble_cut_inside"
+            elif self._fifa_step % 4 == 0:
                 act = "dribble_forward"
             elif self._fifa_step % 3 == 0:
                 act = "through_pass"
@@ -620,9 +636,9 @@ class UniversalBrain:
             return {
                 "action": act,
                 "threat_score": scene.threat_urgency,
-                "confidence": 0.94,
+                "confidence": 0.95,
                 "latency_ms": 0.2,
-                "source": "fifa_dynamic_reflex",
+                "source": "fifa_pro_controls",
                 "target_coords": None,
             }
 
@@ -674,7 +690,10 @@ class UniversalBrain:
                     # In front of obstacle: evade to whichever side is open
                     has_left_obstacle = any(o.x - p_x < -lane_thresh and o.distance_to_player < danger_dist for o in scene.threats)
                     has_right_obstacle = any(o.x - p_x > lane_thresh and o.distance_to_player < danger_dist for o in scene.threats)
-                    if not has_left_obstacle and left_action:
+                    hoverboard_action = next((a.name for a in profile.actions if "hoverboard" in a.name or "shield" in a.name), None)
+                    if has_left_obstacle and has_right_obstacle and scene.threat_urgency > 0.82 and hoverboard_action:
+                        chosen = hoverboard_action
+                    elif not has_left_obstacle and left_action:
                         chosen = left_action
                     elif not has_right_obstacle and right_action:
                         chosen = right_action

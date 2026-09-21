@@ -308,6 +308,27 @@ class AdbController:
         ]
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def hold(self, x: int, y: int, duration_ms: int = 250):
+        """Sends press-and-hold touch gesture for sustained gas throttle, power shots, or continuous beams."""
+        self.swipe(x, y, x, y, duration_ms=duration_ms)
+
+    def double_tap(self, x: int, y: int, delay_sec: float = 0.06):
+        """Chains rapid double-tap (activates hoverboard shield, nitro bursts, revives)."""
+        shell_script = f"input tap {int(x)} {int(y)} && sleep {delay_sec} && input tap {int(x)} {int(y)}"
+        cmd = self._cmd_prefix() + ["shell", shell_script]
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def flick(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 65):
+        """Rapid directional skill flick (finesse curl, chip shot, 5-star skill moves)."""
+        self.swipe(x1, y1, x2, y2, duration_ms=duration_ms)
+
+    def chained_taps(self, points: List[Tuple[int, int]], delay_sec: float = 0.04):
+        """Executes a cluster of precision taps across target points in a single kernel batch."""
+        parts = [f"input tap {int(pt[0])} {int(pt[1])}" for pt in points]
+        shell_script = f" && sleep {delay_sec} && ".join(parts)
+        cmd = self._cmd_prefix() + ["shell", shell_script]
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     def swipe_up(self, duration_ms: int = 80):
         """Vault / Jump gesture (swipes upward from lower center)."""
         cx = self.screen_width // 2
@@ -373,7 +394,13 @@ class AdbController:
         act = action_name.lower().strip()
 
         # 1. 3-Lane Runner actions (Subway Surfers, Temple Run)
-        if "left" in act and "tilt" not in act and "card" not in act:
+        if "hoverboard" in act or "shield" in act:
+            # Double tap screen center to activate invincibility hoverboard
+            self.double_tap(self.screen_width // 2, int(self.screen_height * 0.50))
+        elif "fast_fall" in act or "cancel_jump" in act:
+            # Immediate downward swipe to cancel jump arc and slide
+            self.swipe_down(duration_ms=50)
+        elif "left" in act and "tilt" not in act and "card" not in act:
             self.swipe_left()
         elif "right" in act and "tilt" not in act and "card" not in act:
             self.swipe_right()
@@ -383,6 +410,12 @@ class AdbController:
             self.swipe_down()
 
         # 2. Fruit Ninja Slice actions
+        elif "combo_slice" in act or "wide_slice" in act:
+            x1 = int(self.screen_width * 0.15)
+            y1 = int(self.screen_height * 0.75)
+            x2 = int(self.screen_width * 0.85)
+            y2 = int(self.screen_height * 0.35)
+            self.flick(x1, y1, x2, y2, duration_ms=55)
         elif "slice" in act:
             if target_coords:
                 self.slice_target(target_coords[0], target_coords[1])
@@ -391,7 +424,7 @@ class AdbController:
                 y1 = int(self.screen_height * 0.72)
                 x2 = int(self.screen_width * 0.80)
                 y2 = int(self.screen_height * 0.42)
-                self.swipe(x1, y1, x2, y2, duration_ms=65)
+                self.flick(x1, y1, x2, y2, duration_ms=60)
 
         # 3. Precision tap-to-click target (Aim trainers, Fruit Ninja, Solar Smash)
         elif "tap_target" in act or "click_target" in act:
@@ -400,6 +433,10 @@ class AdbController:
             self.tap(tx, ty)
 
         # 4. Tap / One-tap actions (Flappy Bird, Geometry Dash, Universal Taps)
+        elif "double_flap" in act or "double_jump" in act:
+            cx = self.screen_width // 2
+            cy = int(self.screen_height * 0.65)
+            self.double_tap(cx, cy, delay_sec=0.08)
         elif "flap" in act or "tap" in act or "jump_tap" in act:
             cx = self.screen_width // 2
             cy = int(self.screen_height * 0.65)
@@ -413,6 +450,11 @@ class AdbController:
             # Tap OK button or center to dismiss post-game screen or collect rewards
             self.tap(int(self.screen_width * 0.50), int(self.screen_height * 0.83))
             self.tap(int(self.screen_width * 0.50), int(self.screen_height * 0.50))
+        elif "deploy_defense_center" in act:
+            # Golden pocket plant between both Princess Towers to lure both lanes
+            card_slots_x = [int(self.screen_width * x) for x in [0.287, 0.463, 0.634, 0.806]]
+            self._clash_card_idx = (getattr(self, "_clash_card_idx", 0) + 1) % 4
+            self.deploy_clash_card(card_slots_x[self._clash_card_idx], int(self.screen_height * 0.915), int(self.screen_width * 0.505), int(self.screen_height * 0.575))
         elif "deploy_card_left" in act or "deploy_card_right" in act or "deploy_spell_center" in act:
             card_slots_x = [
                 int(self.screen_width * 0.287),  # Slot 1: ~310
@@ -422,100 +464,145 @@ class AdbController:
             ]
             self._clash_card_idx = (getattr(self, "_clash_card_idx", 0) + 1) % 4
             card_x = card_slots_x[self._clash_card_idx]
-            card_y = int(self.screen_height * 0.915)  # ~2140 (exact vertical card center)
+            card_y = int(self.screen_height * 0.915)  # ~2140
 
             if "deploy_card_left" in act:
-                target_x = int(self.screen_width * 0.194)  # ~210 left bridge mouth
-                target_y = int(self.screen_height * 0.490)  # ~1150
+                target_x = int(self.screen_width * 0.194)  # Left bridge mouth
+                target_y = int(self.screen_height * 0.490)
             elif "deploy_card_right" in act:
-                target_x = int(self.screen_width * 0.731)  # ~790 right bridge mouth
-                target_y = int(self.screen_height * 0.490)  # ~1150
+                target_x = int(self.screen_width * 0.731)  # Right bridge mouth
+                target_y = int(self.screen_height * 0.490)
             else:  # deploy_spell_center
-                # Direct damage spells (Fireball / Arrows) onto enemy Princess Towers
                 self._clash_spell_idx = (getattr(self, "_clash_spell_idx", 0) + 1) % 2
-                target_x = int(self.screen_width * (0.194 if self._clash_spell_idx == 0 else 0.741))  # 210 or 800
-                target_y = int(self.screen_height * 0.235)  # ~550 (enemy Princess Tower)
+                target_x = int(self.screen_width * (0.194 if self._clash_spell_idx == 0 else 0.741))
+                target_y = int(self.screen_height * 0.235)
 
-            # Execute fast chained native card deployment
             self.deploy_clash_card(card_x, card_y, target_x, target_y)
 
         # 6. Vehicle Driver actions (Earn to Die 2 - Landscape Optimized)
         elif "accelerate" in act or "gas" in act:
             gx = int(self.screen_width * 0.86)
             gy = int(self.screen_height * 0.82)
-            self.tap(gx, gy)
+            # Sustained hold on gas pedal to maintain powerful engine RPM
+            self.hold(gx, gy, duration_ms=360)
         elif "boost" in act or "nitro" in act:
             bx = int(self.screen_width * 0.14)
             by = int(self.screen_height * 0.82)
-            self.tap(bx, by)
+            # Sustained nitro thruster burst
+            self.hold(bx, by, duration_ms=240)
         elif "tilt_forward" in act:
             tx = int(self.screen_width * 0.75)
             ty = int(self.screen_height * 0.82)
-            self.tap(tx, ty)
+            self.hold(tx, ty, duration_ms=160)
         elif "tilt_back" in act:
             tx = int(self.screen_width * 0.25)
             ty = int(self.screen_height * 0.82)
-            self.tap(tx, ty)
+            self.hold(tx, ty, duration_ms=160)
 
-        # 7. EA Sports FC / FIFA Mobile (Landscape Optimized)
-        elif "sprint_tackle" in act:
-            sx = int(self.screen_width * 0.88)
-            sy = int(self.screen_height * 0.84)
-            self.tap(sx, sy)
-        elif "through_pass" in act:
-            tx = int(self.screen_width * 0.77)
-            ty = int(self.screen_height * 0.70)
-            self.tap(tx, ty)
-        elif "shoot_goal" in act:
+        # 7. EA Sports FC / FIFA Mobile (Landscape Pro Controls)
+        elif "finesse_shot" in act:
+            # Swipe down on Shoot button for curling far-post finesse finish
             sx = int(self.screen_width * 0.88)
             sy = int(self.screen_height * 0.68)
-            self.tap(sx, sy)
+            self.flick(sx, sy, sx, sy + 110, duration_ms=65)
+        elif "chip_shot" in act:
+            # Swipe up on Shoot button to lob the oncoming goalkeeper
+            sx = int(self.screen_width * 0.88)
+            sy = int(self.screen_height * 0.68)
+            self.flick(sx, sy, sx, sy - 110, duration_ms=65)
+        elif "power_shot" in act:
+            # Swipe right across Shoot button for high velocity rocket strike
+            sx = int(self.screen_width * 0.88)
+            sy = int(self.screen_height * 0.68)
+            self.flick(sx, sy, sx + 120, sy, duration_ms=75)
+        elif "skill_move" in act or "roulette" in act:
+            # Flick upward on Sprint & Skill button to trigger 5-star skill move
+            sx = int(self.screen_width * 0.88)
+            sy = int(self.screen_height * 0.84)
+            self.flick(sx, sy, sx, sy - 130, duration_ms=70)
+        elif "sprint_tackle" in act:
+            # Sustained hold on sprint/tackle to lock on and press opposing attacker
+            sx = int(self.screen_width * 0.88)
+            sy = int(self.screen_height * 0.84)
+            self.hold(sx, sy, duration_ms=320)
+        elif "shoot_goal" in act:
+            # Calibrated power strike (~65% power bar charge)
+            sx = int(self.screen_width * 0.88)
+            sy = int(self.screen_height * 0.68)
+            self.hold(sx, sy, duration_ms=180)
+        elif "through_pass" in act:
+            # Measured through ball into running channel
+            tx = int(self.screen_width * 0.77)
+            ty = int(self.screen_height * 0.70)
+            self.hold(tx, ty, duration_ms=140)
         elif "pass" in act:
             px = int(self.screen_width * 0.77)
             py = int(self.screen_height * 0.87)
             self.tap(px, py)
+        elif "dribble_cut_inside" in act or "cut_inside" in act:
+            # Virtual joystick diagonal cut inside towards the penalty box
+            jx = int(self.screen_width * 0.16)
+            jy = int(self.screen_height * 0.74)
+            self.swipe(jx, jy, jx + 75, jy - 75, duration_ms=260)
         elif "dribble" in act or "drive_forward" in act:
-            # Analog stick swipe from left quadrant forward down the wing
+            # Analog stick drive forward down the wing
             jx1 = int(self.screen_width * 0.16)
             jy = int(self.screen_height * 0.74)
-            jx2 = int(self.screen_width * 0.24)
-            self.swipe(jx1, jy, jx2, jy, duration_ms=220)
+            jx2 = int(self.screen_width * 0.25)
+            self.swipe(jx1, jy, jx2, jy, duration_ms=260)
 
-        # 8. Solar Smash (Landscape Optimized)
-        elif "fire_laser" in act or "orbital_strike" in act or "launch_meteor" in act:
-            # Tap weapon drawer on right edge, then tap planet center
+        # 8. Solar Smash (Landscape Optimized Superweapons)
+        elif "fire_laser" in act:
+            # Tap weapon drawer right edge, then sustained thermal core drill
             wx = int(self.screen_width * 0.94)
             wy = int(self.screen_height * 0.38)
             self.tap(wx, wy)
-            time.sleep(0.04)
+            time.sleep(0.03)
             cx = self.screen_width // 2
             cy = self.screen_height // 2
-            self.tap(cx, cy)
+            self.hold(cx, cy, duration_ms=850)
+        elif "orbital_strike" in act:
+            # Cluster bombardment salvo across 3 target coordinates
+            cx = self.screen_width // 2
+            cy = self.screen_height // 2
+            self.chained_taps([(cx - 90, cy - 60), (cx + 80, cy + 50), (cx, cy + 80)], delay_sec=0.04)
+        elif "launch_meteor" in act:
+            wx = int(self.screen_width * 0.94)
+            wy = int(self.screen_height * 0.50)
+            self.tap(wx, wy)
+            time.sleep(0.03)
+            self.hold(self.screen_width // 2, self.screen_height // 2, duration_ms=200)
         elif "rotate_planet" in act:
             y = self.screen_height // 2
             x1 = int(self.screen_width * 0.72)
             x2 = int(self.screen_width * 0.28)
-            self.swipe(x1, y, x2, y, duration_ms=120)
+            self.swipe(x1, y, x2, y, duration_ms=140)
 
-        # 8. BitLife Simulation
+        # 9. BitLife & Choice Simulation
         elif "age_up" in act:
             ax = int(self.screen_width * 0.50)
             ay = int(self.screen_height * 0.69)
             self.tap(ax, ay)
-        elif "primary_choice" in act:
+        elif "primary_choice" in act or "choice_1" in act:
             cx = int(self.screen_width * 0.50)
-            cy = int(self.screen_height * 0.58)
+            cy = int(self.screen_height * 0.54)
             self.tap(cx, cy)
-        elif "secondary_choice" in act:
+        elif "secondary_choice" in act or "choice_2" in act:
             cx = int(self.screen_width * 0.50)
-            cy = int(self.screen_height * 0.66)
+            cy = int(self.screen_height * 0.62)
+            self.tap(cx, cy)
+        elif "choice_3" in act:
+            cx = int(self.screen_width * 0.50)
+            cy = int(self.screen_height * 0.70)
             self.tap(cx, cy)
         elif "dismiss_popup" in act:
             cx = int(self.screen_width * 0.50)
-            cy = int(self.screen_height * 0.72)
+            cy = int(self.screen_height * 0.75)
             self.tap(cx, cy)
+            time.sleep(0.04)
+            self.tap(cx, int(self.screen_height * 0.82))
 
-        # 9. Precision target clicker
+        # 10. Precision target clicker
         elif "click" in act or "target" in act:
             if target_coords:
                 self.tap(target_coords[0], target_coords[1])
@@ -524,6 +611,6 @@ class AdbController:
                 cy = self.screen_height // 2
                 self.tap(cx, cy)
 
-        # 10. Auto-revive / restart / continue
+        # 11. Auto-revive / restart / continue
         elif "restart" in act or "revive" in act or "continue" in act:
             self.trigger_auto_restart()

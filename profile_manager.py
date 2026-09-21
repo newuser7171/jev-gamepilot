@@ -96,6 +96,18 @@ DEFAULT_PROFILES: List[GameProfile] = [
                 duration_sec=0.30,
             ),
             GameAction(
+                name="hoverboard",
+                key="space",
+                description="Double-tap screen to activate invincibility hoverboard shield",
+                duration_sec=0.08,
+            ),
+            GameAction(
+                name="fast_fall",
+                key="down",
+                description="Cancel jump arc in mid-air to land immediately and slide under barrier",
+                duration_sec=0.15,
+            ),
+            GameAction(
                 name="maintain_course",
                 key="none",
                 description="Current lane is open and safe",
@@ -347,6 +359,12 @@ DEFAULT_PROFILES: List[GameProfile] = [
                 is_mouse_click=True,
             ),
             GameAction(
+                name="deploy_defense_center",
+                key="mouse_left",
+                description="Plant defensive building or troops in golden central pocket to draw both lanes",
+                is_mouse_click=True,
+            ),
+            GameAction(
                 name="wait",
                 key="none",
                 description="Preserve and generate elixir for high-cost counter-push",
@@ -384,13 +402,43 @@ DEFAULT_PROFILES: List[GameProfile] = [
             GameAction(
                 name="shoot_goal",
                 key="space",
-                description="Power strike towards upper corner of opponent net",
+                description="Calibrated power strike (~65% power bar charge)",
                 duration_sec=0.18,
+            ),
+            GameAction(
+                name="finesse_shot",
+                key="down",
+                description="Flick down on shoot button for curling far-post finesse strike",
+                duration_sec=0.15,
+            ),
+            GameAction(
+                name="chip_shot",
+                key="up",
+                description="Flick up on shoot button to lob the oncoming goalkeeper",
+                duration_sec=0.15,
+            ),
+            GameAction(
+                name="power_shot",
+                key="right",
+                description="Flick right across shoot button for high velocity rocket strike",
+                duration_sec=0.20,
+            ),
+            GameAction(
+                name="skill_move",
+                key="up",
+                description="Flick upward on sprint & skill button to execute 5-star skill move",
+                duration_sec=0.15,
             ),
             GameAction(
                 name="dribble_forward",
                 key="right",
                 description="Engage virtual joystick forward to advance down the wing towards enemy goal",
+                duration_sec=0.25,
+            ),
+            GameAction(
+                name="dribble_cut_inside",
+                key="up",
+                description="Diagonal joystick cut inside towards the penalty box",
                 duration_sec=0.25,
             ),
             GameAction(

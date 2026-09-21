@@ -212,23 +212,32 @@ class PhoneGamePilot:
                         elif "earntodie" in self.profile.id:
                             action_name = "accelerate"
                         elif "fruit" in self.profile.id:
-                            action_name = "slice_target"
+                            action_name = "combo_slice" if (self.total_actions % 2 == 0) else "slice_target"
                         elif "flappy" in self.profile.id:
                             action_name = "flap"
                         elif "fifa" in self.profile.id:
-                            action_name = "sprint_tackle" if (self.total_actions % 3 == 0) else "pass"
+                            fifa_rot = ["dribble_forward", "sprint_tackle", "pass", "through_pass"]
+                            action_name = fifa_rot[self.total_actions % len(fifa_rot)]
                         elif "runner" in self.profile.id or self.profile.category == "runner":
                             action_name = "slide" if (self.total_actions % 2 == 0) else "jump"
                         elif "solar" in self.profile.id:
-                            action_name = "fire_laser"
+                            action_name = "fire_laser" if (self.total_actions % 2 == 0) else "orbital_strike"
                         elif "bitlife" in self.profile.id:
                             action_name = "age_up"
                         elif self.profile.actions:
                             action_name = self.profile.actions[0].name
 
-                cooldown = 1.3 if ("clash" in self.profile.id and action_name != "start_battle") else (
-                    0.10 if "earntodie" in self.profile.id else 0.16
-                )
+                if "clash" in self.profile.id and action_name != "start_battle":
+                    cooldown = 1.3
+                elif "solar" in self.profile.id:
+                    cooldown = 0.45
+                elif "earntodie" in self.profile.id:
+                    cooldown = 0.28
+                elif "fifa" in self.profile.id:
+                    cooldown = 0.22
+                else:
+                    cooldown = 0.15
+
                 if action_name not in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > cooldown):
                     self.adb.dispatch_action(action_name, target_coords=decision.get("target_coords"))
                     self.total_actions += 1
