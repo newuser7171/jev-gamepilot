@@ -122,52 +122,104 @@ class UniversalBrain:
                 time.sleep(0.02)
 
     def _evaluate_scene(self, profile: GameProfile, scene: UniversalSceneState):
-        """Dispatches scene evaluation to local Laya, TypeSafe SDK, or keyless classifier."""
-        # 1. Local Laya Engine (fastest, local in-process)
+        """
+        Unified Laya + Jev Dual-System Architecture:
+        1. Fast local in-process inference via Laya (15-25ms, zero network overhead).
+        2. If Laya confidence is high (>= 0.88), commit immediately.
+        3. If Laya confidence is low (< 0.88) or ambiguous, escalate to Jev System One for arbitration.
+        4. If both provide decisions, fuse them into 'laya_jev_consensus' with blended confidence.
+        """
+        laya_res = None
         if self.laya_agent is not None:
-            res = self._query_local_laya(profile, scene)
-            if res:
-                with self._lock:
-                    self.last_decision = res
-                return
+            laya_res = self._query_local_laya(profile, scene)
 
-        # 2. TypeSafe Jev System One SDK
-        if self.client is not None and os.getenv("TYPESAFE_API_KEY"):
-            res = self._query_typesafe_sdk(profile, scene)
-            if res:
-                with self._lock:
-                    self.last_decision = res
-                return
-
-        # 3. Keyless fallback via classifier.dev
-        res = self._query_classifier_dev(profile, scene)
-        if res:
+        # Fast path: High confidence local Laya decision
+        if laya_res and laya_res.get("confidence", 0.0) >= 0.88:
             with self._lock:
-                self.last_decision = res
+                self.last_decision = laya_res
+            return
+
+        # Secondary opinion / Escalation: Query Jev System One (Cloud SDK or keyless classifier.dev)
+        jev_res = None
+        if self.client is not None and os.getenv("TYPESAFE_API_KEY"):
+            jev_res = self._query_typesafe_sdk(profile, scene)
+        if not jev_res:
+            jev_res = self._query_classifier_dev(profile, scene)
+
+        # Consensus Fusion: Merge Laya + Jev decisions
+        if laya_res and jev_res:
+            laya_act = laya_res.get("action")
+            jev_act = jev_res.get("action")
+            if laya_act == jev_act:
+                # Both Laya and Jev agree: maximum confidence consensus
+                fused = {
+                    "action": laya_act,
+                    "threat_score": max(laya_res.get("threat_score", 0), jev_res.get("threat_score", 0)),
+                    "confidence": min(0.99, round((laya_res.get("confidence", 0.8) + jev_res.get("confidence", 0.8)) / 2 + 0.1, 2)),
+                    "latency_ms": round(laya_res.get("latency_ms", 15) + jev_res.get("latency_ms", 50), 1),
+                    "source": "laya_jev_consensus",
+                    "target_coords": laya_res.get("target_coords") or jev_res.get("target_coords"),
+                }
+            else:
+                # Disagreement: pick higher calibrated confidence model
+                if laya_res.get("confidence", 0) >= jev_res.get("confidence", 0):
+                    fused = dict(laya_res)
+                    fused["source"] = "laya_preferred"
+                else:
+                    fused = dict(jev_res)
+                    fused["source"] = "jev_escalation"
+
+            with self._lock:
+                self.last_decision = fused
+            return
+
+        # Fallback to whichever responded
+        winner = laya_res or jev_res
+        if winner:
+            with self._lock:
+                self.last_decision = winner
 
     def query_jev_universal(
         self, profile: GameProfile, scene: UniversalSceneState
     ) -> Optional[Dict[str, Any]]:
-        """Synchronously queries the brain for testing / benchmarking."""
+        """Synchronously queries combined Laya + Jev fusion for testing / benchmarking."""
+        laya_res = None
         if self.laya_agent is not None:
-            res = self._query_local_laya(profile, scene)
-            if res:
-                with self._lock:
-                    self.last_decision = res
-                return res
+            laya_res = self._query_local_laya(profile, scene)
 
-        if self.client is not None and os.getenv("TYPESAFE_API_KEY"):
-            res = self._query_typesafe_sdk(profile, scene)
-            if res:
-                with self._lock:
-                    self.last_decision = res
-                return res
-
-        res = self._query_classifier_dev(profile, scene)
-        if res:
+        if laya_res and laya_res.get("confidence", 0.0) >= 0.88:
             with self._lock:
-                self.last_decision = res
-        return res
+                self.last_decision = laya_res
+            return laya_res
+
+        jev_res = None
+        if self.client is not None and os.getenv("TYPESAFE_API_KEY"):
+            jev_res = self._query_typesafe_sdk(profile, scene)
+        if not jev_res:
+            jev_res = self._query_classifier_dev(profile, scene)
+
+        if laya_res and jev_res:
+            if laya_res.get("action") == jev_res.get("action"):
+                fused = {
+                    "action": laya_res.get("action"),
+                    "threat_score": max(laya_res.get("threat_score", 0), jev_res.get("threat_score", 0)),
+                    "confidence": min(0.99, round((laya_res.get("confidence", 0.8) + jev_res.get("confidence", 0.8)) / 2 + 0.1, 2)),
+                    "latency_ms": round(laya_res.get("latency_ms", 15) + jev_res.get("latency_ms", 50), 1),
+                    "source": "laya_jev_consensus",
+                    "target_coords": laya_res.get("target_coords") or jev_res.get("target_coords"),
+                }
+            else:
+                fused = dict(laya_res if laya_res.get("confidence", 0) >= jev_res.get("confidence", 0) else jev_res)
+                fused["source"] = "laya_preferred" if laya_res.get("confidence", 0) >= jev_res.get("confidence", 0) else "jev_escalation"
+            with self._lock:
+                self.last_decision = fused
+            return fused
+
+        winner = laya_res or jev_res
+        if winner:
+            with self._lock:
+                self.last_decision = winner
+        return winner
 
     def query_jev_async(
         self, profile: GameProfile, scene: UniversalSceneState

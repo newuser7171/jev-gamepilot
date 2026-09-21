@@ -1,10 +1,10 @@
 @echo off
-title Laya Phone Game Pilot // Autonomous Mobile Gaming AI
+title Laya + Jev Phone Game Pilot // Autonomous Mobile Gaming AI
 cd /d "C:\Users\newuser\.gemini\antigravity\scratch\jev-gamepilot"
 
 echo =======================================================
-echo     ⚡ LAYA UNIVERSAL PHONE GAME PILOT
-echo       Autonomous AI Driver for ANY Android Game
+echo     ⚡ LAYA + JEV UNIVERSAL PHONE GAME PILOT
+echo       Dual-Tier Autonomous AI Driver for ANY Game
 echo =======================================================
 echo.
 echo Mode:

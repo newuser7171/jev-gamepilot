@@ -96,15 +96,15 @@ class PhoneGamePilot:
                 f"[bold green]Screen Resolution:[/] {w}x{h}\n"
                 f"[bold green]Active Game Profile:[/] {self.profile.name} ({self.profile.category.upper()})\n"
                 f"[bold green]Auto-Game Detection:[/] {'ENABLED (Adapts to any game automatically)' if self.auto_mode else 'LOCKED'}\n"
-                f"[bold green]Neural Brain:[/] Laya System One (Zero-Latency Local / Cloud Fallback)\n\n"
-                f"[bold yellow]👉 Launch any game on your phone. Laya will drive automatically.[/bold yellow]\n"
+                f"[bold green]Neural Brain:[/] Dual Laya + Jev Fusion (Local Reflexes + System One Consensus)\n\n"
+                f"[bold yellow]👉 Launch any game on your phone. Laya + Jev will drive automatically.[/bold yellow]\n"
                 f"[bold red]Press ESC or Q in the PC preview window to STOP immediately.[/bold red]",
-                title="[bold cyan]⚡ Universal Phone Game Pilot Active[/bold cyan]",
+                title="[bold cyan]⚡ Universal Phone Game Pilot Active (Laya + Jev Fusion)[/bold cyan]",
                 border_style="cyan",
             )
         )
 
-        preview_win = f"Laya Phone Pilot // {self.profile.name}"
+        preview_win = f"Laya + Jev Phone Pilot // {self.profile.name}"
         if show_preview:
             cv2.namedWindow(preview_win, cv2.WINDOW_NORMAL)
             # Scale preview window to comfortable aspect ratio
@@ -116,7 +116,7 @@ class PhoneGamePilot:
             # Instant splash frame so window never renders unpainted Windows grey
             splash = np.zeros((preview_h, preview_w, 3), dtype=np.uint8)
             splash[:] = (20, 22, 32)
-            cv2.putText(splash, "LAYA PILOT", (preview_w // 2 - 100, preview_h // 2 - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 255, 204), 2, cv2.LINE_AA)
+            cv2.putText(splash, "LAYA + JEV PILOT", (preview_w // 2 - 130, preview_h // 2 - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.95, (0, 255, 204), 2, cv2.LINE_AA)
             cv2.putText(splash, "Streaming phone screen...", (preview_w // 2 - 110, preview_h // 2 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1, cv2.LINE_AA)
             cv2.imshow(preview_win, splash)
             cv2.waitKey(1)
@@ -176,7 +176,7 @@ class PhoneGamePilot:
                     header_bg = (20, 22, 32)
                     cv2.rectangle(annotated, (0, 0), (w, 140), header_bg, -1)
 
-                    title_text = f"LAYA PILOT // {self.profile.name.upper()}"
+                    title_text = f"LAYA + JEV FUSION // {self.profile.name.upper()}"
                     cv2.putText(
                         annotated,
                         title_text,
