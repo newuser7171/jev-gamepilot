@@ -1026,6 +1026,12 @@ class GamePilotHUD(ctk.CTk):
             text=f"Total Actions: {actions_c}\nMode: {prof.category.upper()}"
         )
 
+        src = decision.get("source", "brain").replace("_", " ").upper()
+        lat = decision.get("latency_ms", 0.0)
+        conf = int(decision.get("confidence", 1.0) * 100)
+        self.brain_source_lbl.configure(text=f"{src} ({lat:.1f}ms)")
+        self.fast_fall_lbl.configure(text=f"Confidence: {conf}%")
+
 
 if __name__ == "__main__":
     app = GamePilotHUD()
