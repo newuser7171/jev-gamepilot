@@ -268,6 +268,24 @@ class UniversalBrain:
             except queue.Full:
                 pass
 
+    def decide(
+        self, scene: UniversalSceneState, profile: Optional[GameProfile] = None
+    ) -> Dict[str, Any]:
+        """Direct synchronous scene evaluation returning actionable decision dictionary."""
+        if profile is None:
+            from profile_manager import ProfileManager
+            profile = ProfileManager().get_profile("mobile_universal")
+        res = self.query_jev_universal(profile, scene)
+        if not res:
+            res = {
+                "action": scene.recommended_action or "wait",
+                "threat_score": scene.threat_urgency,
+                "confidence": 0.88,
+                "latency_ms": 1.0,
+                "source": "heuristic_reflex",
+            }
+        return res
+
     def _build_verbal_state(
         self, profile: GameProfile, scene: UniversalSceneState
     ) -> str:
@@ -325,6 +343,17 @@ class UniversalBrain:
         # Target telemetry (aim games)
         if scene.best_target:
             parts.append(f"High-contrast target pinpointed in crosshairs at ({scene.best_target.click_x}, {scene.best_target.click_y}).")
+
+        # 8 Ball Pool telemetry
+        if "8ball" in profile.id or "pool" in profile.id:
+            if scene.best_target and scene.player:
+                parts.append(
+                    f"Cue ball is located at ({scene.player.click_x}, {scene.player.click_y}) on the billiard table. "
+                    f"Optimal target pocket is locked at ({scene.best_target.click_x}, {scene.best_target.click_y}). "
+                    f"Aim trajectory is established. Cue power stroke is ready."
+                )
+            else:
+                parts.append("Cue ball on felt. Balls are in motion or awaiting turn.")
 
         return " ".join(parts)
 

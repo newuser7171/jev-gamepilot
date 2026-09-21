@@ -24,6 +24,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from adapters.phone_adapter import AdbController, PACKAGE_PROFILE_MAP
+from all_games_dialog import AllGamesDialog
 from custom_profile_dialog import CustomProfileDialog
 from embedded_dino import EmbeddedDinoArena
 from pilot_core import PilotCore
@@ -122,6 +123,19 @@ class GamePilotHUD(ctk.CTk):
         # Right side: Mini Mode Toggle & Status Badge
         r_box = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         r_box.pack(side="right", padx=15)
+
+        self.all_games_btn = ctk.CTkButton(
+            r_box,
+            text="📚 All 28+ Games",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            width=135,
+            height=28,
+            fg_color="#1e2136",
+            hover_color="#2f3454",
+            text_color="#00ffcc",
+            command=self._open_all_games_dialog,
+        )
+        self.all_games_btn.pack(side="left", padx=(0, 10))
 
         self.mini_mode_btn = ctk.CTkButton(
             r_box,
@@ -294,22 +308,21 @@ class GamePilotHUD(ctk.CTk):
         )
         prof_lbl.pack(anchor="w", padx=pad_x, pady=(4, 2))
 
-        phone_profiles = [
-            "♠️ Solitaire & Classic Cards (mobile_solitaire)",
-            "👑 Clash Royale RTS (mobile_clash_royale)",
-            "🏄 Subway Surfers 3-Lane (runner_3lane)",
-            "🍉 Fruit Ninja Blade (mobile_fruit_ninja)",
-            "🚗 Earn to Die 2 Zombie Hill (mobile_earntodie2)",
-            "⚽ EA Sports FC / FIFA Mobile (mobile_fifa)",
-            "💥 Solar Smash Planetary (mobile_solarsmash)",
-            "🧬 BitLife Life Sim (mobile_bitlife)",
-            "🃏 Balatro / Card Battlers (mobile_card_battler)",
-            "🐍 Snake & Grid Arcades (mobile_snake)",
-            "📱 Universal Android AI (mobile_universal)",
-        ]
+        # Search & Filter bar for Phone Games
+        self.phone_search_entry = ctk.CTkEntry(
+            self.phone_panel,
+            placeholder_text="🔍 Search phone games (e.g. 8 Ball, Solitaire)...",
+            height=28,
+            font=ctk.CTkFont(size=11),
+            fg_color="#141620",
+            border_color="#2b2f42",
+        )
+        self.phone_search_entry.pack(fill="x", padx=pad_x, pady=(0, 4))
+        self.phone_search_entry.bind("<KeyRelease>", self._on_phone_search_changed)
+
         self.phone_prof_selector = ctk.CTkOptionMenu(
             self.phone_panel,
-            values=phone_profiles,
+            values=self._get_phone_profile_dropdown_values(),
             command=self._on_phone_profile_selected,
             fg_color="#1a1c26",
             button_color="#2b2f42",
@@ -318,10 +331,11 @@ class GamePilotHUD(ctk.CTk):
             dropdown_fg_color="#1a1c26",
             height=30,
         )
-        self.phone_prof_selector.set(phone_profiles[0])
+        phone_vals = self._get_phone_profile_dropdown_values()
+        self.phone_prof_selector.set(phone_vals[0] if phone_vals else "📱 Universal Android AI")
         self.phone_prof_selector.pack(fill="x", padx=pad_x, pady=(0, 8))
 
-        # Quick Manual Touch Shortcuts (Grid of 4)
+        # Dynamic Quick Manual Touch Shortcuts
         quick_lbl = ctk.CTkLabel(
             self.phone_panel,
             text="QUICK TOUCH SHORTCUTS",
@@ -330,58 +344,9 @@ class GamePilotHUD(ctk.CTk):
         )
         quick_lbl.pack(anchor="w", padx=pad_x, pady=(4, 4))
 
-        quick_grid = ctk.CTkFrame(self.phone_panel, fg_color="transparent")
-        quick_grid.pack(fill="x", padx=pad_x, pady=(0, 8))
-
-        btn_stock = ctk.CTkButton(
-            quick_grid,
-            text="♠️ Draw Stock",
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color="#1f2232",
-            hover_color="#2c3044",
-            text_color="#ffffff",
-            height=26,
-            command=lambda: self._dispatch_quick_touch("draw_stock"),
-        )
-        btn_stock.grid(row=0, column=0, padx=(0, 4), pady=2, sticky="ew")
-
-        btn_sweep = ctk.CTkButton(
-            quick_grid,
-            text="⚡ Sweep Table",
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color="#1f2232",
-            hover_color="#2c3044",
-            text_color="#ffffff",
-            height=26,
-            command=lambda: self._dispatch_quick_touch("sweep_all_columns"),
-        )
-        btn_sweep.grid(row=0, column=1, padx=(4, 0), pady=2, sticky="ew")
-
-        btn_center = ctk.CTkButton(
-            quick_grid,
-            text="🎯 Center Tap",
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color="#1f2232",
-            hover_color="#2c3044",
-            text_color="#ffffff",
-            height=26,
-            command=lambda: self._dispatch_quick_touch("tap_center"),
-        )
-        btn_center.grid(row=1, column=0, padx=(0, 4), pady=2, sticky="ew")
-
-        btn_restart = ctk.CTkButton(
-            quick_grid,
-            text="🔄 Auto-Deal",
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color="#1f2232",
-            hover_color="#2c3044",
-            text_color="#ffffff",
-            height=26,
-            command=lambda: self._dispatch_quick_touch("new_deal"),
-        )
-        btn_restart.grid(row=1, column=1, padx=(4, 0), pady=2, sticky="ew")
-        quick_grid.columnconfigure(0, weight=1)
-        quick_grid.columnconfigure(1, weight=1)
+        self.phone_quick_frame = ctk.CTkFrame(self.phone_panel, fg_color="transparent")
+        self.phone_quick_frame.pack(fill="x", padx=pad_x, pady=(0, 8))
+        self._update_phone_quick_actions_ui()
 
         # Big Action Buttons
         self.phone_arm_btn = ctk.CTkButton(
@@ -429,6 +394,18 @@ class GamePilotHUD(ctk.CTk):
             text_color="#00ffcc",
         )
         sec1_lbl.pack(anchor="w", padx=pad_x, pady=(4, 2))
+
+        # Search & Filter bar for PC Games
+        self.pc_search_entry = ctk.CTkEntry(
+            self.pc_panel,
+            placeholder_text="🔍 Search PC games (e.g. Balatro, 8 Ball, Spire)...",
+            height=28,
+            font=ctk.CTkFont(size=11),
+            fg_color="#141620",
+            border_color="#2b2f42",
+        )
+        self.pc_search_entry.pack(fill="x", padx=pad_x, pady=(0, 4))
+        self.pc_search_entry.bind("<KeyRelease>", self._on_pc_search_changed)
 
         self.profile_selector = ctk.CTkOptionMenu(
             self.pc_panel,
@@ -1035,10 +1012,110 @@ class GamePilotHUD(ctk.CTk):
                 self.phone_profile = new_p
                 self._sync_phone_profile_dropdown(new_p.id)
 
+    def _get_phone_profile_dropdown_values(self, query: str = "") -> list[str]:
+        q = query.strip().lower()
+        items = []
+        for p in self.phone_profile_mgr.list_profiles():
+            if (
+                p.category == "mobile"
+                or p.id.startswith("mobile_")
+                or p.id in ["runner_3lane", "mobile_8ball_pool"]
+            ):
+                if not q or q in p.name.lower() or q in p.id.lower() or q in (p.description or "").lower():
+                    items.append(f"{p.icon or '📱'} {p.name} ({p.id})")
+        if not items:
+            items = ["📱 Universal Android AI (mobile_universal)"]
+        return items
+
+    def _on_phone_search_changed(self, event=None):
+        q = self.phone_search_entry.get()
+        vals = self._get_phone_profile_dropdown_values(q)
+        self.phone_prof_selector.configure(values=vals)
+        if vals:
+            self.phone_prof_selector.set(vals[0])
+            self._on_phone_profile_selected(vals[0])
+
+    def _update_phone_quick_actions_ui(self):
+        if not hasattr(self, "phone_quick_frame"):
+            return
+        for child in self.phone_quick_frame.winfo_children():
+            child.destroy()
+
+        prof_id = getattr(self.phone_profile, "id", "")
+        if prof_id == "mobile_8ball_pool":
+            shortcuts = [
+                ("🎱 Power Break", "break_shot"),
+                ("🎯 Aim Pocket", "aim_target_ball"),
+                ("📐 Fine-Tune", "fine_tune_aim_right"),
+                ("⚡ Shoot Cue", "shoot_power"),
+            ]
+        elif prof_id == "mobile_solitaire":
+            shortcuts = [
+                ("♠️ Draw Stock", "draw_stock"),
+                ("⚡ Sweep Table", "sweep_all_columns"),
+                ("🎯 Center Tap", "tap_center"),
+                ("🔄 Auto-Deal", "new_deal"),
+            ]
+        elif prof_id == "mobile_clash_royale":
+            shortcuts = [
+                ("⚔️ Play Left", "play_card_1_left"),
+                ("🛡️ Play Right", "play_card_2_right"),
+                ("💥 Spell Tower", "cast_spell_enemy_tower"),
+                ("🔄 Start Battle", "start_battle"),
+            ]
+        elif prof_id == "runner_3lane":
+            shortcuts = [
+                ("⬅️ Dodge Left", "swipe_left"),
+                ("➡️ Dodge Right", "swipe_right"),
+                ("⬆️ Jump", "swipe_up"),
+                ("⬇️ Roll", "swipe_down"),
+            ]
+        elif prof_id == "mobile_fruit_ninja":
+            shortcuts = [
+                ("🍉 Slice Slash", "swipe_up"),
+                ("⚡ Diagonal Cut", "swipe_left"),
+                ("🎯 Center Tap", "tap_center"),
+                ("🔄 Restart", "tap_center"),
+            ]
+        else:
+            shortcuts = []
+            if hasattr(self.phone_profile, "actions") and self.phone_profile.actions:
+                for act in self.phone_profile.actions[:4]:
+                    shortcuts.append((f"⚡ {act.name.replace('_', ' ').title()}", act.name))
+            while len(shortcuts) < 4:
+                if len(shortcuts) == 0:
+                    shortcuts.append(("🎯 Center Tap", "tap_center"))
+                elif len(shortcuts) == 1:
+                    shortcuts.append(("🔄 Wait", "wait"))
+                elif len(shortcuts) == 2:
+                    shortcuts.append(("⬆️ Swipe Up", "swipe_up"))
+                else:
+                    shortcuts.append(("⬇️ Swipe Down", "swipe_down"))
+
+        for idx, (label, act_name) in enumerate(shortcuts[:4]):
+            row = idx // 2
+            col = idx % 2
+            padx = (0, 4) if col == 0 else (4, 0)
+            btn = ctk.CTkButton(
+                self.phone_quick_frame,
+                text=label,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="#1f2232",
+                hover_color="#2c3044",
+                text_color="#ffffff",
+                height=26,
+                command=lambda an=act_name: self._dispatch_quick_touch(an),
+            )
+            btn.grid(row=row, column=col, padx=padx, pady=2, sticky="ew")
+
+        self.phone_quick_frame.columnconfigure(0, weight=1)
+        self.phone_quick_frame.columnconfigure(1, weight=1)
+
     def _sync_phone_profile_dropdown(self, prof_id: str):
         for val in self.phone_prof_selector._values:
             if prof_id in val:
                 self.phone_prof_selector.set(val)
+                self._update_phone_quick_actions_ui()
                 break
 
     def _on_toggle_phone_auto_detect(self):
@@ -1051,6 +1128,7 @@ class GamePilotHUD(ctk.CTk):
         if p:
             self.phone_profile = p
             self.score_lbl.configure(text=f"Profile: {p.name}")
+            self._update_phone_quick_actions_ui()
 
     def _dispatch_quick_touch(self, action_name: str):
         if not self.phone_adb.is_connected:
@@ -1269,10 +1347,71 @@ class GamePilotHUD(ctk.CTk):
     # PC PILOT & CALIBRATION
     # =========================================================================
 
-    def _get_profile_dropdown_values(self) -> list[str]:
-        names = [p.name for p in self.core.profile_mgr.list_profiles()]
+    def _get_profile_dropdown_values(self, query: str = "") -> list[str]:
+        q = query.strip().lower()
+        names = []
+        for p in self.core.profile_mgr.list_profiles():
+            if not q or q in p.name.lower() or q in p.id.lower() or q in (p.description or "").lower():
+                names.append(p.name)
+        if not names:
+            names = [p.name for p in self.core.profile_mgr.list_profiles()]
         names.append("➕ Create Custom Game Profile...")
         return names
+
+    def _on_pc_search_changed(self, event=None):
+        q = self.pc_search_entry.get()
+        vals = self._get_profile_dropdown_values(q)
+        self.profile_selector.configure(values=vals)
+        if vals:
+            self.profile_selector.set(vals[0])
+            self._on_profile_selected(vals[0])
+
+    def _open_all_games_dialog(self):
+        AllGamesDialog(self, on_select_profile_cb=self._on_catalog_game_selected)
+
+    def _on_catalog_game_selected(self, prof_id: str):
+        target_prof = self.phone_profile_mgr.get_profile(prof_id)
+        if not target_prof:
+            return
+
+        is_mobile = (
+            target_prof.category == "mobile"
+            or prof_id.startswith("mobile_")
+            or prof_id in ["runner_3lane", "mobile_8ball_pool"]
+        )
+
+        if is_mobile:
+            self.mode_selector.set("📱 Phone (ADB)")
+            self._on_mode_switched("📱 Phone (ADB)")
+            self.phone_profile = target_prof
+            if hasattr(self, "phone_search_entry"):
+                self.phone_search_entry.delete(0, "end")
+            self.phone_prof_selector.configure(
+                values=self._get_phone_profile_dropdown_values()
+            )
+            self._sync_phone_profile_dropdown(prof_id)
+            self._update_phone_quick_actions_ui()
+            self.score_lbl.configure(text=f"Selected: {target_prof.name}")
+        elif prof_id == "runner_dino":
+            self.mode_selector.set("🎮 Dino Arena")
+            self._on_mode_switched("🎮 Dino Arena")
+            self.score_lbl.configure(text="Selected: Dino Arena")
+        else:
+            self.mode_selector.set("🖥️ PC Window")
+            self._on_mode_switched("🖥️ PC Window")
+            self.core.set_profile(prof_id)
+            if hasattr(self, "pc_search_entry"):
+                self.pc_search_entry.delete(0, "end")
+            self.profile_selector.configure(
+                values=self._get_profile_dropdown_values()
+            )
+            self.profile_selector.set(target_prof.name)
+            self.actions_preview_lbl.configure(
+                text=self._format_actions_preview(target_prof)
+            )
+            self.score_lbl.configure(text=f"Selected: {target_prof.name}")
+            if target_prof.default_window_keyword:
+                self.core.vision.snap_to_window(target_prof.default_window_keyword)
 
     def _format_actions_preview(self, profile: GameProfile) -> str:
         keys_summary = " | ".join(

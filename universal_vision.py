@@ -42,6 +42,9 @@ class UniversalSceneState:
     game_phase: str = "active"  # "main_menu", "in_battle", "game_over", "active"
     elixir: int = 5
     raw_frame: Optional[np.ndarray] = None
+    table_detected: bool = False
+    cue_ball: Optional[Tuple[int, int]] = None
+    pockets: List[Tuple[int, int]] = field(default_factory=list)
 
 
 class UniversalVision:
@@ -325,8 +328,58 @@ class UniversalVision:
                 )
                 scene.best_target = auto_target
                 scene.targets = [auto_target]
-            else:
-                scene.game_phase = "playing"
+        elif "8ball" in profile.id or "pool" in profile.id:
+            # 8 Ball Pool Perception:
+            pockets = [
+                (int(w * 0.12), int(h * 0.18)),  # Top-Left
+                (int(w * 0.50), int(h * 0.15)),  # Top-Mid
+                (int(w * 0.88), int(h * 0.18)),  # Top-Right
+                (int(w * 0.12), int(h * 0.82)),  # Bot-Left
+                (int(w * 0.50), int(h * 0.85)),  # Bot-Mid
+                (int(w * 0.88), int(h * 0.82)),  # Bot-Right
+            ]
+            scene.pockets = pockets
+            scene.table_detected = True
+
+            # Detect Cue Ball (Bright white circular cluster on table felt)
+            table_roi = frame_bgr[int(h * 0.15) : int(h * 0.85), int(w * 0.10) : int(w * 0.90)]
+            white_mask = (table_roi[:, :, 0] > 195) & (table_roi[:, :, 1] > 195) & (table_roi[:, :, 2] > 195)
+            cue_x, cue_y = int(w * 0.35), int(h * 0.50)
+            if white_mask.sum() > 25:
+                wy, wx = np.where(white_mask)
+                cue_x = int(np.median(wx)) + int(w * 0.10)
+                cue_y = int(np.median(wy)) + int(h * 0.15)
+
+            scene.cue_ball = (cue_x, cue_y)
+            scene.player = UniversalEntity(
+                x=cue_x - 16, y=cue_y - 16, w=32, h=32,
+                entity_type="cue_ball", click_x=cue_x, click_y=cue_y
+            )
+
+            # Choose optimal target pocket
+            best_pocket = pockets[0]
+            best_dist = 99999.0
+            for px, py in pockets:
+                d = math.hypot(px - cue_x, py - cue_y)
+                if 80 < d < best_dist:
+                    best_dist = d
+                    best_pocket = (px, py)
+
+            aim_target = UniversalEntity(
+                x=best_pocket[0] - 22,
+                y=best_pocket[1] - 22,
+                w=44,
+                h=44,
+                entity_type="target_pocket",
+                confidence=0.96,
+                click_x=best_pocket[0],
+                click_y=best_pocket[1],
+            )
+            scene.best_target = aim_target
+            scene.targets = [aim_target]
+            scene.threat_urgency = 0.65
+            scene.game_phase = "aiming"
+            scene.recommended_action = "shoot_power"
 
         self.last_frame_gray = gray
         return scene
@@ -439,6 +492,25 @@ class UniversalVision:
             )
             cv2.circle(
                 annotated, (t.click_x, t.click_y), max(10, t.w // 2), (0, 255, 0), 1
+            )
+
+        # 8 Ball Pool Laser Aim Guideline Overlay
+        if ("8ball" in profile.id or "pool" in profile.id) and scene.player and scene.targets:
+            cp = scene.player
+            tp = scene.targets[0]
+            # Draw bright laser aim line from cue ball to target pocket
+            cv2.line(annotated, (cp.click_x, cp.click_y), (tp.click_x, tp.click_y), (0, 255, 120), 2, cv2.LINE_AA)
+            # Draw ghost ball indicator circle
+            cv2.circle(annotated, (tp.click_x, tp.click_y), 18, (0, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(
+                annotated,
+                "AIM LINE // POCKET LOCK",
+                (min(cp.click_x, tp.click_x), min(cp.click_y, tp.click_y) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
             )
 
         # Top Banner

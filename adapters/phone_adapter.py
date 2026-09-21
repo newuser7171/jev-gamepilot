@@ -60,6 +60,11 @@ PACKAGE_PROFILE_MAP = {
     "com.tripledot.solitaire": "mobile_solitaire",
     "com.zynga.solitaire": "mobile_solitaire",
     "com.me2star.solitaire": "mobile_solitaire",
+    # 8 Ball Pool & Billiards
+    "com.miniclip.eightballpool": "mobile_8ball_pool",
+    "com.eyewind.pool": "mobile_8ball_pool",
+    "com.funfree.billiards": "mobile_8ball_pool",
+    "com.giraffegames.realpool3d": "mobile_8ball_pool",
 }
 
 
@@ -182,6 +187,14 @@ class AdbController:
             or "patience" in pkg_lower
         ):
             return "mobile_solitaire", pkg
+        elif (
+            "pool" in pkg_lower
+            or "billiard" in pkg_lower
+            or "snooker" in pkg_lower
+            or "eightball" in pkg_lower
+            or "8ball" in pkg_lower
+        ):
+            return "mobile_8ball_pool", pkg
         elif (
             "snap" in pkg_lower
             or "card" in pkg_lower
@@ -631,6 +644,61 @@ class AdbController:
         cy = int(self.screen_height * 0.75)
         self.tap(cx, cy)
 
+    def aim_8ball_target(self, target_x: int, target_y: int):
+        """
+        Rotates cue stick in 8 Ball Pool to align along the target trajectory.
+        Dragging smoothly outside the cue ball adjusts the laser guideline.
+        """
+        cx = self.screen_width // 2
+        cy = self.screen_height // 2
+        self.swipe(cx, cy, target_x, target_y, duration_ms=180)
+
+    def fine_tune_8ball_aim(self, direction: str = "left"):
+        """Nudges aiming wheel on side for sub-pixel alignment."""
+        wx = int(self.screen_width * 0.94)
+        wy = int(self.screen_height * 0.50)
+        offset = -40 if direction == "left" else 40
+        self.swipe(wx, wy, wx, wy + offset, duration_ms=80)
+
+    def shoot_8ball_cue(self, power_pct: float = 0.75):
+        """
+        Pulls down the power meter cue stick on the left edge and releases to shoot.
+        power_pct: 0.10 (gentle safety pot) to 1.0 (maximum break shot).
+        """
+        power_pct = max(0.10, min(1.0, power_pct))
+        px = int(self.screen_width * 0.065)
+        py_top = int(self.screen_height * 0.30)
+        py_bot = int(self.screen_height * 0.85)
+        py_pull = int(py_top + power_pct * (py_bot - py_top))
+        self.swipe(px, py_top, px, py_pull, duration_ms=int(180 + power_pct * 120))
+
+    def set_8ball_spin(self, spin_x: float = 0.0, spin_y: float = 0.0):
+        """
+        Configures cue ball strike contact point (topspin, backspin, english).
+        Taps the cue ball spin icon at top-right and adjusts the strike position.
+        """
+        icon_x = int(self.screen_width * 0.92)
+        icon_y = int(self.screen_height * 0.14)
+        self.tap(icon_x, icon_y)
+        if abs(spin_x) > 0.05 or abs(spin_y) > 0.05:
+            dot_x = int(icon_x + spin_x * 40)
+            dot_y = int(icon_y + spin_y * 40)
+            self.swipe(icon_x, icon_y, dot_x, dot_y, duration_ms=100)
+
+    def call_8ball_pocket(self, pocket_key: str = "tm"):
+        """Taps designated pocket to call shot on the 8-ball."""
+        w, h = self.screen_width, self.screen_height
+        pockets = {
+            "tl": (int(w * 0.12), int(h * 0.18)),
+            "tm": (int(w * 0.50), int(h * 0.15)),
+            "tr": (int(w * 0.88), int(h * 0.18)),
+            "bl": (int(w * 0.12), int(h * 0.82)),
+            "bm": (int(w * 0.50), int(h * 0.85)),
+            "br": (int(w * 0.88), int(h * 0.82)),
+        }
+        pt = pockets.get(pocket_key.lower()[:2], pockets["tm"])
+        self.tap(pt[0], pt[1])
+
     def dispatch_action(
         self,
         action_name: str,
@@ -1002,7 +1070,36 @@ class AdbController:
         elif "turn_right" in act or "snake_right" in act:
             self.swipe_right(duration_ms=60)
 
-        # 15. Universal Fallback: Ensure no action is ever silently dropped as a no-op!
+        # 15. 8 Ball Pool & Billiards (Miniclip / Real Pool)
+        elif "break_shot" in act or ("break" in act and "auto" not in act):
+            self.shoot_8ball_cue(power_pct=1.0)
+        elif "shoot_power" in act or "shoot" in act:
+            self.shoot_8ball_cue(power_pct=0.75)
+        elif "aim_target" in act or "aim" in act or "pot" in act:
+            if target_coords and len(target_coords) == 2:
+                self.aim_8ball_target(target_coords[0], target_coords[1])
+            else:
+                self.aim_8ball_target(int(self.screen_width * 0.50), int(self.screen_height * 0.50))
+        elif "fine_tune" in act:
+            dir_side = "right" if "right" in act else "left"
+            self.fine_tune_8ball_aim(dir_side)
+        elif "spin_top" in act:
+            self.set_8ball_spin(0.0, -0.8)
+        elif "spin_back" in act:
+            self.set_8ball_spin(0.0, 0.8)
+        elif "spin_center" in act:
+            self.set_8ball_spin(0.0, 0.0)
+        elif "call_pocket" in act or "pocket" in act:
+            key = "tm"
+            for p in ["tl", "tm", "tr", "bl", "bm", "br"]:
+                if p in act:
+                    key = p
+                    break
+            self.call_8ball_pocket(key)
+        elif "auto_rematch" in act or "rematch" in act:
+            self.trigger_auto_restart()
+
+        # 16. Universal Fallback: Ensure no action is ever silently dropped as a no-op!
         else:
             if target_coords and len(target_coords) == 2:
                 self.tap(target_coords[0], target_coords[1])
