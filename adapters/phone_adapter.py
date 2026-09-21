@@ -172,6 +172,8 @@ class AdbController:
             return "mobile_solarsmash", pkg
         elif "bitlife" in pkg_lower or "life" in pkg_lower or "sim" in pkg_lower or "choice" in pkg_lower:
             return "mobile_bitlife", pkg
+        elif "snake" in pkg_lower or "slither" in pkg_lower or "worm" in pkg_lower or "nibbles" in pkg_lower:
+            return "mobile_snake", pkg
         elif (
             "solitaire" in pkg_lower
             or "klondike" in pkg_lower
@@ -587,9 +589,9 @@ class AdbController:
             self.swipe_left()
         elif "right" in act and "tilt" not in act and "card" not in act:
             self.swipe_right()
-        elif "jump" in act or "vault" in act or act == "up":
+        elif "jump" in act or "vault" in act or "up" in act and "popup" not in act and "age" not in act:
             self.swipe_up()
-        elif "slide" in act or "duck" in act or act == "down":
+        elif "slide" in act or "duck" in act or "down" in act:
             self.swipe_down()
 
         # 2. Fruit Ninja Slice actions

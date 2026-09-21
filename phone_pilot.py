@@ -192,6 +192,8 @@ class PhoneGamePilot:
                     max_idle = 0.45  # Continuous sprint & pass
                 elif "fruit" in self.profile.id:
                     max_idle = 0.75  # Active slice sweep across rising fruit
+                elif "snake" in self.profile.id:
+                    max_idle = 0.40  # Rapid grid cornering
                 elif "runner" in self.profile.id or self.profile.category == "runner":
                     max_idle = 1.10  # Active slide/jump to maintain momentum
                 elif "clash" in self.profile.id:
@@ -222,6 +224,9 @@ class PhoneGamePilot:
                         elif "fifa" in self.profile.id:
                             fifa_rot = ["dribble_forward", "sprint_tackle", "pass", "through_pass"]
                             action_name = fifa_rot[self.total_actions % len(fifa_rot)]
+                        elif "snake" in self.profile.id:
+                            snake_rot = ["turn_right", "turn_down", "turn_left", "turn_up"]
+                            action_name = snake_rot[self.total_actions % len(snake_rot)]
                         elif "solitaire" in self.profile.id:
                             sol_rot = [
                                 "tap_waste_card",
@@ -250,6 +255,8 @@ class PhoneGamePilot:
                     cooldown = 0.85
                 elif "solitaire" in self.profile.id:
                     cooldown = 0.32
+                elif "snake" in self.profile.id:
+                    cooldown = 0.12
                 elif "solar" in self.profile.id:
                     cooldown = 0.45
                 elif "earntodie" in self.profile.id:

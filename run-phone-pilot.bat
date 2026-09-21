@@ -19,8 +19,9 @@ echo  8. BitLife ^& Choice Sims (Age Progression, Scenario Decisions)
 echo  9. Flappy Bird / One-Tap Arcades (Precision Taps)
 echo 10. Card Games ^& TCGs (Marvel SNAP, Hearthstone, Pokemon, Balatro)
 echo 11. Solitaire ^& Classic Card Puzzles (Klondike, Spider, FreeCell)
+echo 12. Snake ^& Grid Arcades (4-Way Turn Reflexes)
 echo.
-set /p choice="Select mode [1-11] (default: 1): "
+set /p choice="Select mode [1-12] (default: 1): "
 
 if "%choice%"=="2" (
     python phone_pilot.py --profile runner_3lane
@@ -42,6 +43,8 @@ if "%choice%"=="2" (
     python phone_pilot.py --profile mobile_card_battler
 ) else if "%choice%"=="11" (
     python phone_pilot.py --profile mobile_solitaire
+) else if "%choice%"=="12" (
+    python phone_pilot.py --profile mobile_snake
 ) else (
     python phone_pilot.py --profile auto
 )

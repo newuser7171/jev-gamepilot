@@ -23,13 +23,20 @@ from universal_vision import UniversalEntity, UniversalSceneState
 
 load_dotenv()
 
-# Try importing local laya engine
+# Try importing local laya engine (supports both Apple Silicon MLX and standard PyTorch)
 _LAYA_AVAILABLE = False
+_LAYA_BACKEND = "none"
 try:
-    import laya
+    import laya_mlx as laya
     _LAYA_AVAILABLE = True
+    _LAYA_BACKEND = "mlx"
 except ImportError:
-    pass
+    try:
+        import laya
+        _LAYA_AVAILABLE = True
+        _LAYA_BACKEND = "pytorch"
+    except ImportError:
+        pass
 
 # Try importing TypeSafe SDK
 _TYPESAFE_AVAILABLE = False
@@ -97,7 +104,22 @@ class UniversalBrain:
 
     @staticmethod
     def _find_local_laya_checkpoint() -> Optional[str]:
-        """Locates the local offline Laya checkpoint in HuggingFace cache."""
+        """Locates the local offline Laya checkpoint in HuggingFace cache or MLX model directories."""
+        # 1. MLX directories (Apple Silicon)
+        if _LAYA_BACKEND == "mlx":
+            mlx_dirs = [
+                "models/hub/laya-multilingual-mlx",
+                "models/laya-multilingual",
+                os.path.expanduser(r"~\.cache\huggingface\hub\models--aac6fef--laya-multilingual-mlx"),
+                os.path.expanduser(r"~\.cache\huggingface\hub\models--aac6fef--laya-mlx"),
+                "aac6fef/laya-multilingual-mlx",
+            ]
+            for d in mlx_dirs:
+                if os.path.exists(d):
+                    return d
+            return "aac6fef/laya-multilingual-mlx"
+
+        # 2. PyTorch HuggingFace cache
         hf_base = os.path.expanduser(r"~\.cache\huggingface\hub\models--convaiinnovations--laya\snapshots")
         if os.path.isdir(hf_base):
             for snap in os.listdir(hf_base):

@@ -664,6 +664,47 @@ DEFAULT_PROFILES: List[GameProfile] = [
             ),
         ],
     ),
+    GameProfile(
+        id="mobile_snake",
+        name="🐍 Snake & Grid Runners",
+        category="arcade",
+        description="Autonomous pilot for Snake arcades: evaluates 4-way heading, food trajectory, body collisions, and cornering maneuvers",
+        default_window_keyword="snake",
+        scan_direction="omnidirectional",
+        auto_restart_key="space",
+        is_builtin=True,
+        actions=[
+            GameAction(
+                name="turn_up",
+                key="up",
+                description="Turn heading upward towards food or open vertical corridor",
+                duration_sec=0.04,
+            ),
+            GameAction(
+                name="turn_down",
+                key="down",
+                description="Turn heading downward towards food or away from ceiling collision",
+                duration_sec=0.04,
+            ),
+            GameAction(
+                name="turn_left",
+                key="left",
+                description="Turn heading left towards food or open lateral lane",
+                duration_sec=0.04,
+            ),
+            GameAction(
+                name="turn_right",
+                key="right",
+                description="Turn heading right towards food or open lateral lane",
+                duration_sec=0.04,
+            ),
+            GameAction(
+                name="maintain_heading",
+                key="none",
+                description="Current heading is clear and direct to target",
+            ),
+        ],
+    ),
 ]
 
 
