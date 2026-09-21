@@ -279,7 +279,15 @@ class PhoneGamePilot:
                             cb = getattr(scene, "cue_ball", None)
                             power = getattr(scene, "shot_power", 0.65)
                             cut = getattr(scene, "cut_angle_deg", 0.0)
-                            if action_name in ["execute_shot", "break_shot", "pot_ball"]:
+                            if action_name == "place_cue_ball":
+                                pt = t_coords if t_coords else (int(self.adb.screen_width * 0.50), int(self.adb.screen_height * 0.50))
+                                console.print(f"[bold yellow]🎱 [BALL IN HAND][/bold yellow] Placing cue ball at {pt}...")
+                                self.adb.tap(pt[0], pt[1])
+                                self.total_actions += 1
+                                self.last_action_time = now
+                                self.last_dispatched_action = action_name
+                                continue
+                            elif action_name in ["execute_shot", "break_shot", "pot_ball"]:
                                 if t_coords:
                                     console.print(
                                         f"[bold cyan]🎱 [8-BALL SHOT LOCK][/bold cyan] Ghost Target: {t_coords} | Cut: {cut}° | Power: {int(power*100)}%"

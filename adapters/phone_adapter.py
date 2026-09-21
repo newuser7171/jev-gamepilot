@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+import math
 import subprocess
 import threading
 from typing import Any, Dict, List, Optional, Tuple
@@ -644,40 +645,127 @@ class AdbController:
         cy = int(self.screen_height * 0.75)
         self.tap(cx, cy)
 
+    def detect_cue_guideline_angle(
+        self,
+        frame: Optional[np.ndarray] = None,
+        cue_x: Optional[int] = None,
+        cue_y: Optional[int] = None,
+    ) -> Optional[float]:
+        """
+        Detects active in-game aim guideline orientation angle in degrees [0, 360).
+        Searches inner felt strictly between table boundaries to prevent pocket false-positives.
+        """
+        if frame is None:
+            with self._frame_lock:
+                frame = self._latest_frame.copy() if self._latest_frame is not None else None
+        if frame is None:
+            return None
+
+        h, w = frame.shape[:2]
+        # Inner table felt bounds (excludes rails, ball return tray and power slider)
+        tx1, tx2 = int(w * 0.15), int(w * 0.85)
+        ty1, ty2 = int(h * 0.19), int(h * 0.81)
+
+        # 1. Locate cue ball if not provided
+        if cue_x is None or cue_y is None or not (tx1 <= cue_x <= tx2 and ty1 <= cue_y <= ty2):
+            felt = frame[ty1:ty2, tx1:tx2]
+            gray = cv2.cvtColor(felt, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+            circles = cv2.HoughCircles(
+                blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=30,
+                param1=50, param2=22, minRadius=16, maxRadius=28
+            )
+            if circles is not None:
+                circles = np.round(circles[0, :]).astype("int")
+                for cx, cy, r in circles:
+                    rx, ry = cx + tx1, cy + ty1
+                    patch = frame[max(0, ry - 3):min(h, ry + 4), max(0, rx - 3):min(w, rx + 4)]
+                    if patch.size > 0 and (patch[:, :, 0] > 195).all() and (patch[:, :, 1] > 195).all() and (patch[:, :, 2] > 195).all():
+                        cue_x, cue_y = rx, ry
+                        break
+
+        if cue_x is None or cue_y is None:
+            return None
+
+        # 2. Extract bright white guideline pixels radiating from cue ball
+        crop_r = 200
+        cy1, cy2 = max(0, cue_y - crop_r), min(h, cue_y + crop_r)
+        cx1, cx2 = max(0, cue_x - crop_r), min(w, cue_x + crop_r)
+        crop = frame[cy1:cy2, cx1:cx2]
+
+        white_mask = (crop[:, :, 0] > 225) & (crop[:, :, 1] > 225) & (crop[:, :, 2] > 225)
+        ys, xs = np.where(white_mask)
+        angles = []
+        for x, y in zip(xs, ys):
+            gx = cx1 + x
+            gy = cy1 + y
+            d = math.hypot(gx - cue_x, gy - cue_y)
+            if 28 < d < 180:
+                ang = math.degrees(math.atan2(gy - cue_y, gx - cue_x)) % 360.0
+                angles.append(ang)
+
+        if len(angles) >= 12:
+            rads = np.radians(angles)
+            med_ang = math.degrees(math.atan2(float(np.mean(np.sin(rads))), float(np.mean(np.cos(rads))))) % 360.0
+            return med_ang
+
+        return None
+
     def aim_8ball_target(
         self,
         target_x: int,
         target_y: int,
         cue_x: Optional[int] = None,
         cue_y: Optional[int] = None,
+        max_correction_passes: int = 3,
     ):
         """
         Aims cue stick in 8 Ball Pool toward the target ball or ghost-ball coordinate.
-        Snaps cue stick by tapping on the target vector, then drags smoothly along the felt.
+        Uses calibrated horizontal table swipes (5.42 px/deg) with closed-loop optical feedback.
         """
-        # 1. Direct aim tap: snaps cue line directly toward the target ball
-        self.tap(target_x, target_y)
-        time.sleep(0.08)
+        if cue_x is None or cue_y is None:
+            cue_x = int(self.screen_width * 0.50)
+            cue_y = int(self.screen_height * 0.50)
 
-        # 2. Refinement drag: if cue position known, drag slightly outward along the shot angle
-        if cue_x is not None and cue_y is not None:
-            dx = target_x - cue_x
-            dy = target_y - cue_y
-            dist = math.hypot(dx, dy)
-            if dist > 10:
-                ux = dx / dist
-                uy = dy / dist
-                # Drag across opposite cue stick tail to finalize alignment
-                tail_x = int(cue_x - ux * 160)
-                tail_y = int(cue_y - uy * 160)
-                head_x = int(cue_x - ux * 220)
-                head_y = int(cue_y - uy * 220)
-                # Keep inside screen bounds
-                tail_x = max(100, min(self.screen_width - 100, tail_x))
-                tail_y = max(100, min(self.screen_height - 100, tail_y))
-                head_x = max(100, min(self.screen_width - 100, head_x))
-                head_y = max(100, min(self.screen_height - 100, head_y))
-                self.swipe(tail_x, tail_y, head_x, head_y, duration_ms=120)
+        dx = target_x - cue_x
+        dy = target_y - cue_y
+        target_angle_deg = math.degrees(math.atan2(dy, dx)) % 360.0
+
+        K_PIX_PER_DEG = 5.42
+        table_cx = int(self.screen_width * 0.50)
+        table_cy = int(self.screen_height * 0.50)
+
+        for pass_idx in range(max_correction_passes):
+            cur_angle = self.detect_cue_guideline_angle(cue_x=cue_x, cue_y=cue_y)
+
+            # If guideline not detected, tap cue ball to place (in case of ball-in-hand)
+            if cur_angle is None:
+                if pass_idx == 0:
+                    self.tap(cue_x, cue_y)
+                    time.sleep(0.20)
+                    cur_angle = self.detect_cue_guideline_angle(cue_x=cue_x, cue_y=cue_y)
+
+            if cur_angle is not None:
+                diff = (target_angle_deg - cur_angle + 180.0) % 360.0 - 180.0
+                if abs(diff) < 1.8:
+                    # Precise aim lock achieved
+                    break
+
+                # Swiping right (+X) turns counter-clockwise (-ang); left (-X) turns clockwise (+ang)
+                swipe_dx = int(-diff * K_PIX_PER_DEG)
+                swipe_dx = max(-550, min(550, swipe_dx))
+                start_x = table_cx - swipe_dx // 2
+                end_x = table_cx + swipe_dx // 2
+                duration = int(140 + abs(swipe_dx) * 0.25)
+                self.swipe(start_x, table_cy, end_x, table_cy, duration_ms=duration)
+                time.sleep(0.18)
+            else:
+                # Open-loop single felt sweep towards target
+                diff = (target_angle_deg + 180.0) % 360.0 - 180.0
+                swipe_dx = max(-450, min(450, int(-diff * 3.5)))
+                self.swipe(table_cx - swipe_dx // 2, table_cy, table_cx + swipe_dx // 2, table_cy, duration_ms=220)
+                time.sleep(0.20)
+                break
 
     def fine_tune_8ball_aim(self, direction: str = "left"):
         """Nudges aiming wheel on side for sub-pixel alignment."""

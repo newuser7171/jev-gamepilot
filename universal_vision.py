@@ -350,8 +350,8 @@ class UniversalVision:
             scene.table_detected = True
 
             # 1. Table Motion Check (Are balls still rolling across the felt?)
-            table_y1, table_y2 = int(h * 0.16), int(h * 0.84)
-            table_x1, table_x2 = int(w * 0.11), int(w * 0.89)
+            table_y1, table_y2 = int(h * 0.19), int(h * 0.81)
+            table_x1, table_x2 = int(w * 0.15), int(w * 0.85)
             if self.last_frame_gray is not None and self.last_frame_gray.shape == gray.shape:
                 cur_t = gray[table_y1:table_y2, table_x1:table_x2]
                 prev_t = self.last_frame_gray[table_y1:table_y2, table_x1:table_x2]
@@ -365,7 +365,7 @@ class UniversalVision:
                     self.last_frame_gray = gray
                     return scene
 
-            # 2. Left Cue Stick Power Meter Check (Is it our turn and is cue ready?)
+            # 2. Left Cue Stick Power Meter Check & Active Player Turn Detection
             x1, x2 = int(w * 0.070), int(w * 0.095)
             y1, y2 = int(h * 0.35), int(h * 0.85)
             crop_cue = frame_bgr[y1:y2, x1:x2]
@@ -373,14 +373,30 @@ class UniversalVision:
             cue_ready = bool(wood.sum() > 300)
             scene.cue_ready = cue_ready
 
-            if not cue_ready:
+            # Check player avatar timer borders
+            p1_box = frame_bgr[int(h * 0.035) : int(h * 0.155), int(w * 0.395) : int(w * 0.445)]
+            p2_box = frame_bgr[int(h * 0.035) : int(h * 0.155), int(w * 0.545) : int(w * 0.595)]
+            p1_green = int(((p1_box[:, :, 2] < 120) & (p1_box[:, :, 1] > 180) & (p1_box[:, :, 0] < 120)).sum()) if p1_box.size > 0 else 0
+            p2_green = int(((p2_box[:, :, 2] < 120) & (p2_box[:, :, 1] > 180) & (p2_box[:, :, 0] < 120)).sum()) if p2_box.size > 0 else 0
+            turn_active = bool(cue_ready or p1_green > 500 or p2_green > 500)
+
+            # Check for Ball-in-Hand notification at bottom
+            bot_crop = frame_bgr[int(h * 0.94) :, int(w * 0.40) : int(w * 0.85)]
+            is_ball_in_hand = False
+            if bot_crop.size > 0:
+                dark = (bot_crop[:, :, 0] < 50) & (bot_crop[:, :, 1] < 50) & (bot_crop[:, :, 2] < 50)
+                white = (bot_crop[:, :, 0] > 200) & (bot_crop[:, :, 1] > 200) & (bot_crop[:, :, 2] > 200)
+                if dark.sum() > 3500 and white.sum() > 250:
+                    is_ball_in_hand = True
+
+            if not turn_active:
                 scene.game_phase = "waiting_for_turn"
                 scene.recommended_action = "wait"
                 scene.threat_urgency = 0.05
                 self.last_frame_gray = gray
                 return scene
 
-            # 3. Detect Balls on Table
+            # 3. Detect Balls on Table Inner Felt
             table_bounds = frame_bgr[table_y1:table_y2, table_x1:table_x2]
             gray_bounds = gray[table_y1:table_y2, table_x1:table_x2]
             blurred = cv2.GaussianBlur(gray_bounds, (9, 9), 2)
@@ -402,29 +418,32 @@ class UniversalVision:
                 circles = np.round(circles[0, :]).astype("int")
                 for cx, cy, r in circles:
                     rx, ry = cx + table_x1, cy + table_y1
-                    bgr = frame_bgr[ry, rx].astype(int)
-                    is_white = (bgr[0] > 215) and (bgr[1] > 215) and (bgr[2] > 215)
-                    patch = frame_bgr[max(0, ry - 3) : min(h, ry + 4), max(0, rx - 3) : min(w, rx + 4)]
-                    if patch.size > 0:
-                        is_solid_white = (patch[:, :, 0] > 195).all() and (patch[:, :, 1] > 195).all() and (patch[:, :, 2] > 195).all()
-                    else:
-                        is_solid_white = False
-
+                    patch = frame_bgr[max(0, ry - 16) : min(h, ry + 16), max(0, rx - 16) : min(w, rx + 16)]
+                    white_px = int(((patch[:, :, 0] > 180) & (patch[:, :, 1] > 180) & (patch[:, :, 2] > 180)).sum()) if patch.size > 0 else 0
                     balls.append({
                         "pos": (rx, ry),
                         "radius": r,
-                        "is_white": bool(is_white or is_solid_white),
+                        "white_px": white_px,
                     })
 
-            # Find Cue Ball (White)
-            white_balls = [b for b in balls if b["is_white"]]
-            if white_balls:
-                best_cb = min(white_balls, key=lambda b: math.hypot(b["pos"][0] - w * 0.5, b["pos"][1] - h * 0.5))
-                cue_ball_pos = best_cb["pos"]
+            # Sort balls by white pixel density to isolate cue ball
+            if balls:
+                sorted_balls = sorted(balls, key=lambda b: b["white_px"], reverse=True)
+                cue_ball_pos = sorted_balls[0]["pos"]
             else:
-                cue_ball_pos = (int(w * 0.50), int(h * 0.58))
+                cue_ball_pos = (int(w * 0.50), int(h * 0.50))
 
             scene.cue_ball = cue_ball_pos
+
+            # If ball in hand and cue not yet placed, place it immediately
+            if is_ball_in_hand and not cue_ready:
+                scene.game_phase = "ball_in_hand"
+                scene.recommended_action = "place_cue_ball"
+                scene.target_coords = cue_ball_pos
+                scene.threat_urgency = 0.85
+                self.last_frame_gray = gray
+                return scene
+
             scene.player = UniversalEntity(
                 x=cue_ball_pos[0] - 16,
                 y=cue_ball_pos[1] - 16,
@@ -438,7 +457,7 @@ class UniversalVision:
             # 4. Filter Object Balls & Calculate Optimal Ghost Ball Cut Angle
             object_balls = [
                 b for b in balls
-                if b["pos"] != cue_ball_pos and math.hypot(b["pos"][0] - cue_ball_pos[0], b["pos"][1] - cue_ball_pos[1]) > 50
+                if b["pos"] != cue_ball_pos and math.hypot(b["pos"][0] - cue_ball_pos[0], b["pos"][1] - cue_ball_pos[1]) > 40
             ]
 
             best_shot = None
