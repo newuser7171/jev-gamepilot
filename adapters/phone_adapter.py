@@ -338,9 +338,12 @@ class AdbController:
         """Executes shell command synchronously to guarantee atomic, collision-free touch events on device."""
         try:
             cmd = self._cmd_prefix() + ["shell", shell_cmd]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout)
-        except Exception:
-            pass
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"ADB input failed: {exc}") from exc
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+            raise RuntimeError(f"ADB input failed: {detail}")
 
     def tap(self, x: int, y: int):
         """Sends immediate tap to phone screen coordinates."""
@@ -588,7 +591,7 @@ class AdbController:
             self.swipe_left()
         elif "right" in act and "tilt" not in act and "card" not in act:
             self.swipe_right()
-        elif "jump" in act or "vault" in act or "up" in act and "popup" not in act and "age" not in act:
+        elif act in {"jump", "vault", "up", "swipe_up", "turn_up", "snake_up"}:
             self.swipe_up()
         elif "slide" in act or "duck" in act or "down" in act:
             self.swipe_down()
@@ -621,7 +624,7 @@ class AdbController:
             cx = self.screen_width // 2
             cy = int(self.screen_height * 0.65)
             self.double_tap(cx, cy, delay_sec=0.08)
-        elif "flap" in act or "tap" in act or "jump_tap" in act:
+        elif act in {"flap", "tap", "jump_tap"}:
             cx = self.screen_width // 2
             cy = int(self.screen_height * 0.65)
             self.tap(cx, cy)

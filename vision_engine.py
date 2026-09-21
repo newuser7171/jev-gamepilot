@@ -47,8 +47,8 @@ class VisionEngine:
     def set_region(self, left: int, top: int, width: int, height: int):
         """Set explicit capture bounding box."""
         self.region = {
-            "left": max(0, int(left)),
-            "top": max(0, int(top)),
+            "left": int(left),
+            "top": int(top),
             "width": max(100, int(width)),
             "height": max(100, int(height)),
         }

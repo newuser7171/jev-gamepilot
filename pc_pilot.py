@@ -53,7 +53,6 @@ PC_WINDOW_TITLE_MAP = {
     "minecraft": "pc_minecraft",
     "trackmania": "pc_trackmania",
     "dino": "runner_dino",
-    "chrome": "runner_dino",
     "subway": "runner_3lane",
     "chess": "chess_copilot",
 }
@@ -105,11 +104,17 @@ class PcGamePilot:
         kw = keyword.lower().strip()
         try:
             for win in gw.getAllWindows():
-                if win.title and kw in win.title.lower() and win.width > 120 and win.height > 120:
+                if self._is_game_window(win) and kw in win.title.lower():
                     return win
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _is_game_window(win) -> bool:
+        title = (win.title or "").lower()
+        return bool(title and "jev-gamepilot" not in title and "game pilot" not in title
+                    and not win.isMinimized and win.width > 120 and win.height > 120)
 
     def _auto_detect_pc_game(self) -> Tuple[GameProfile, Optional[gw.Win32Window]]:
         """Scans open windows to automatically pick the right PC game profile."""
@@ -117,7 +122,7 @@ class PcGamePilot:
         try:
             windows = gw.getAllWindows()
             for win in windows:
-                if not win.title or win.width < 150 or win.height < 150:
+                if not self._is_game_window(win):
                     continue
                 title_lower = win.title.lower()
                 for kw, pid in PC_WINDOW_TITLE_MAP.items():
@@ -135,7 +140,14 @@ class PcGamePilot:
     def _resolve_game_profile(self) -> GameProfile:
         """Resolves target profile and snaps capture bounding box."""
         if self.requested_profile_id in ["auto", "detect", ""]:
-            prof, win = self._auto_detect_pc_game()
+            if self.window_keyword:
+                win = self._find_matching_window(self.window_keyword)
+                if win is None:
+                    raise ValueError(f"No game window matches: {self.window_keyword}")
+                pid = next((pid for kw, pid in PC_WINDOW_TITLE_MAP.items() if kw in win.title.lower()), "pc_universal")
+                prof = self.profile_mgr.get_profile(pid)
+            else:
+                prof, win = self._auto_detect_pc_game()
             if win:
                 self.target_window = win
                 self.target_window_title = win.title
@@ -245,6 +257,7 @@ class PcGamePilot:
                         target_coords=target_coords,
                         viewport_offset=vp_offset,
                         viewport_size=vp_size,
+                        action_binding=next((a for a in self.profile.actions if a.name == action_name), None),
                     )
                 self.total_actions += 1
                 self.last_action_time = now

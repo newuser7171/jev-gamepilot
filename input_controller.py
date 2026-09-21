@@ -5,6 +5,7 @@ with hardware scan codes and multi-tier emergency stop fail-safes.
 """
 
 import ctypes
+import re
 import threading
 import time
 from typing import Optional, Tuple
@@ -213,6 +214,7 @@ class InputController:
         target_coords: Optional[Tuple[int, int]] = None,
         viewport_offset: Tuple[int, int] = (0, 0),
         viewport_size: Tuple[int, int] = (1920, 1080),
+        action_binding: Optional[GameAction] = None,
     ):
         """
         High-level dispatcher for PC games.
@@ -220,6 +222,13 @@ class InputController:
         """
         if not self.is_enabled:
             return
+
+        if action_binding is not None and not action_binding.is_mouse_click:
+            if action_binding.key.lower() in {"none", "wait", ""}:
+                return
+            if resolve_vk(action_binding.key) is not None:
+                self.dispatch_action(action_binding)
+                return
 
         act = action_name.lower().strip()
         vx, vy = viewport_offset
@@ -296,8 +305,13 @@ class InputController:
                 time.sleep(0.04)
         elif "tap_col" in act or "tap_tableau_column" in act:
             col_ratios = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
-            self._sol_col_idx = (self._sol_col_idx + 1) % len(col_ratios)
-            cx = vx + int(vw * col_ratios[self._sol_col_idx])
+            match = re.search(r"(?:col|column)[_\s]?(\d+)$", act)
+            if match:
+                col_idx = max(0, min(6, int(match.group(1)) - 1))
+            else:
+                col_idx = self._sol_col_idx
+                self._sol_col_idx = (col_idx + 1) % len(col_ratios)
+            cx = vx + int(vw * col_ratios[col_idx])
             self.click_at(cx, vy + int(vh * 0.45))
             time.sleep(0.03)
             self.click_at(cx, vy + int(vh * 0.65))
