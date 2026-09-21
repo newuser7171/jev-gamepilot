@@ -50,7 +50,13 @@ except ImportError:
 class UniversalBrain:
     def __init__(self, model_name: str = "jev-latest"):
         self.model_name = model_name
-        self.client = TypeSafeClient() if _TYPESAFE_AVAILABLE else None
+        # The SDK is optional: installed does not mean credentials are configured.
+        # Leave the client unset so the existing keyless/local fallbacks can run.
+        self.client = (
+            TypeSafeClient()
+            if _TYPESAFE_AVAILABLE and os.getenv("TYPESAFE_API_KEY", "").strip()
+            else None
+        )
         self.laya_agent = None
         self.laya_loading = False
         self._laya_tried = False
