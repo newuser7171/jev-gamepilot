@@ -1,75 +1,90 @@
-# ⚡ Universal Jev-GamePilot: Autonomous AI for ANY Game
+# ⚡ Jev-GamePilot: Dual-Tier Autonomous AI for PC & Mobile Games
 
-**Universal Jev-GamePilot** is an autonomous AI gaming agent powered by **TypeSafe's Jev System One** model (`Choice`, `Score`, `Noul`). It captures any game running live on your Windows desktop (browser games, Steam titles, PC games, or Android emulators like BlueStacks), extracts visual game state at 60+ FPS, dynamically queries Jev for tactical decisions matching the game's custom keybindings, and executes microsecond keyboard and mouse inputs with multi-tier emergency stop fail-safes.
+**Jev-GamePilot** is a universal autonomous AI gaming agent powered by **Laya (local sub-30ms System One inference)** and **TypeSafe's Jev System One** (`Choice`, `Score`, `Noul`). It captures real-time gameplay at 60+ FPS, fuses instant local reflexes with high-level strategic reasoning, and executes physical hardware inputs across Windows PC games and connected Android phones.
 
 ---
 
-## 🎮 Built-in Game Profiles & Custom Creator
+## 🚀 Dual Platforms: PC & Phone
 
-| Profile | Genre | Key Mappings | What Jev Evaluates |
+### 1. 💻 PC Game Pilot (`pc_pilot.py` / `run-pc-pilot.bat`)
+Locks onto any running Windows game window or full desktop (Steam, Epic, Battle.net, Browser, Standalone) with microsecond hardware scan codes (`SendInput`), precision mouse clicks, and smooth card drag gestures.
+
+| PC Game Profile | Genre | Inputs | What AI Evaluates |
 | :--- | :--- | :--- | :--- |
-| **🦖 Chrome Dino & Obstacle Runner** | Runner | `Jump (Space)`, `Duck (Down)` | Cacti distance, 3-altitude birds, impact velocity |
-| **🏄 3-Lane Mobile Runner (Subway Surfers)** | Runner | `Left (Left)`, `Right (Right)`, `Jump (Up)`, `Slide (Down)` | 3-lane depth corridor, oncoming trains, barriers |
-| **🐦 Flappy Bird & One-Tap Jumper** | Arcade | `Flap (Space)`, `Glide (None)` | Gap altitude, vertical fall velocity, gap timing |
-| **🎯 Target Clicker & Aim Trainer (Osu / Aim Labs)** | Clicker | `Click Target (Mouse Left)` | Screen target crosshairs, distance, click precision |
-| **🕹️ 2D Platformer / Retro Arcade** | Platformer | `Left (A)`, `Right (D)`, `Jump (Space)`, `Attack (J)` | Enemy proximity, pit gaps, platform navigation |
-| **➕ Custom Game Profile Creator** | Custom | Any keys (`A-Z`, Arrows, Space, Mouse Click) | User-defined objective prompt and allowed actions |
+| **🃏 Balatro** | Roguelike Poker | `Select`, `Play Hand [Enter]`, `Discard [Backspace]`, `Cash Out` | Hand cards, poker hand score valuation, discard cycling |
+| **🗡️ Slay the Spire** | Deckbuilder | `Drag Card to Enemy`, `Drag Shield to Self`, `End Turn [E]` | Energy balance, enemy intent, lethal attacks vs defense |
+| **🛡️ Hearthstone / MTG / Master Duel** | Card Battler | `Drag Card to Board`, `Attack Face`, `Attack Minion`, `Hero Power` | Mana curves, board presence, minion trades, lethal face damage |
+| **♠️ Windows Solitaire Collection** | Card Puzzle | `Cascade Sweep`, `Column Taps 1-7`, `Draw Stock`, `Auto-Finish` | Available auto-moves, card foundations, empty column builds |
+| **🎯 Aim Lab & KovaaK's** | FPS Aim Trainer | `Precision Centroid Flick Click` | Target orb spawns, distance, microsecond flick accuracy |
+| **🧱 Roblox** | 3D Action / Obby | `WASD Movement`, `Space Jump`, `E Interact` | Gap obstacles, lava pits, moving hazards |
+| **⛏️ Minecraft** | Sandbox / Survival | `WASD Movement`, `Space Jump`, `Attack/Mine`, `Use/Place` | Hostile mobs, elevation changes, resource mining |
+| **🏎️ Trackmania** | Racing | `Up (Gas)`, `Left/Right (Steer)`, `Down (Drift Brake)` | Track apex, obstacle dodging, drift control |
+| **🦖 Chrome Dino** | Runner | `Space (Jump)`, `Down (Duck)`, `Space (Restart)` | Cacti clusters, 3-altitude pterodactyls |
+| **💻 Universal PC AI** | Universal | Dynamic 4-way movement, jumps, target clicks | Automatically detects hazards, platforms, and objectives |
+
+### 2. 📱 Phone Game Pilot (`phone_pilot.py` / `run-phone-pilot.bat`)
+Connects directly to an Android phone over USB or Wi-Fi via ADB with zero-latency screen capture and atomic hardware touch injection.
+
+* **Supported Games**: Solar Smash, Subway Surfers, Fruit Ninja, Clash Royale, Earn to Die 2, EA Sports FC / FIFA Mobile, BitLife, Marvel SNAP, Pokémon TCG Pocket, Solitaire, Snake, and Universal Mobile.
+* **Orientation Awareness**: Dynamically detects Portrait vs Landscape and adjusts bottom drawers, side trays, and target coordinates.
 
 ---
 
-## 🚀 Key Features
+## ⚡ Quick Start
 
-* **Universal Vision Engine (`universal_vision.py`)**:
-  * Tracks player avatars across any visual style using contour dynamics or user-calibrated template matching (`📌 Calibrate Avatar`).
-  * Computes threat velocity vectors heading toward the player.
-  * Pinpoints high-contrast clickable targets for clicker and aim games.
-* **Dynamic TypeSafe Jev System One Brain (`universal_brain.py`)**:
-  * Dynamically generates `Choice` criteria from the active profile's action descriptions.
-  * Dynamically scales `Score` threat urgency and evaluates `Noul` reflex triggers.
-* **Dual Game Arenas**:
-  * **🎮 Native Dino Arena**: Embedded 60 FPS canvas game inside the HUD for instant zero-setup play.
-  * **🖥️ Universal Screen Grabber**: Locks onto any game window (Roblox, Minecraft, BlueStacks, Chrome, Steam) using hardware virtual keys (`MapVirtualKeyW`) and coordinate clicks.
-* **🪟 Floating Mini-Bar Mode**:
-  * Shrinks the HUD into a sleek, translucent 380x105 overlay that stays on top of any game without obstructing the screen.
-* **Emergency Fail-Safes**:
-  * Press **ESC** at any time to immediately disarm controls and release all keys.
-  * Flick mouse to top-left corner for PyAutoGUI panic abort.
-
----
-
-## 💻 CLI Commands
-
+### Run PC Game Pilot
+Double-click `run-pc-pilot.bat` (available on Desktop, Downloads, and repo root) or run:
 ```powershell
-# Open Universal Cyber HUD
-python cli.py hud
+# Auto-detects active PC game window
+python pc_pilot.py --profile auto
 
-# List all available game profiles
-python cli.py profiles
+# Or run a specific game profile:
+python pc_pilot.py --profile pc_balatro
+python pc_pilot.py --profile pc_slaythespire
+python pc_pilot.py --profile pc_hearthstone
+python pc_pilot.py --profile pc_solitaire
+python pc_pilot.py --profile pc_aimlab
+```
 
-# Run Jev System One benchmark across profiles
-python cli.py test-brain
+### Run Phone Game Pilot
+Double-click `run-phone-pilot.bat` (available on Desktop, Downloads, and repo root) or run:
+```powershell
+# Auto-detects active foreground game on phone
+python phone_pilot.py --profile auto
 
-# Run headless pilot on a specific profile
-python cli.py play --profile runner_3lane --snap bluestacks
-python cli.py play --profile flappy_tap --snap chrome
-python cli.py play --profile aim_clicker --monitor
+# Or run specific game:
+python phone_pilot.py --profile mobile_solarsmash
+python phone_pilot.py --profile mobile_solitaire
+python phone_pilot.py --profile mobile_card_battler
 ```
 
 ---
 
-## 📁 Architecture
+## 🧠 Architecture
 
 ```
 jev-gamepilot/
-├── custom_profile_dialog.py   # Modal dialog for creating new game profiles
-├── profile_manager.py         # Dynamic game profile repository (profiles.json)
-├── universal_brain.py         # Dynamic TypeSafe Jev System One engine
-├── universal_vision.py        # Universal avatar tracking & threat vectors
-├── input_controller.py        # Universal hardware key & mouse click dispatcher
-├── pilot_core.py              # 60 FPS orchestrator connecting perception & brain
+├── pc_pilot.py                # Autonomous PC Game Pilot with window tracking & input injection
+├── run-pc-pilot.bat           # Desktop batch launcher for PC games
+├── phone_pilot.py             # Autonomous Android Phone Game Pilot via ADB
+├── run-phone-pilot.bat        # Desktop batch launcher for Android phone games
+├── adapters/
+│   ├── phone_adapter.py       # High-speed ADB frame stream & atomic touch dispatcher
+│   ├── dino_adapter.py        # Specialized Dino runner perception
+│   └── screen_chess_adapter.py# Screen Chess 8x8 detection & board evaluation
+├── universal_brain.py         # Dual-Tier Consensus: Local Laya (sub-30ms) + TypeSafe Jev
+├── universal_vision.py        # Universal entity tracking, threat vectors & target centroids
+├── input_controller.py        # Windows hardware scan codes, mouse drags & clicks
+├── profile_manager.py         # PC and Mobile game profiles repository
+├── vision_engine.py           # High-FPS desktop screen grabber with desktop attachment
 ├── game_hud.py                # Cyber HUD with Native Arena & Floating Mini-Bar
-├── embedded_dino.py           # Native embedded 60 FPS canvas game
-├── dino_game.html             # Offline HTML5 Dino runner
-├── cli.py                     # Universal CLI runner
-└── jev-gamepilot.bat          # Desktop batch launcher
+└── cli.py                     # Universal CLI interface
 ```
+
+---
+
+## 🛡️ Safety & Fail-Safes
+
+* **ESC / Q**: Instant emergency stop and shutdown.
+* **Space / F8**: Toggle inputs between **ARMED** (live controls) and **DISARMED** (monitor only).
+* **Failsafe Corner**: Flick mouse to top-left corner (0, 0) for immediate PyAutoGUI hardware interrupt.

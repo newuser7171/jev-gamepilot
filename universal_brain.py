@@ -564,8 +564,47 @@ class UniversalBrain:
                 "target_coords": None,
             }
 
-        # 1d. Mobile Card Battlers & TCGs (Marvel SNAP, Pokémon Pocket, Hearthstone, Balatro)
-        if "card" in profile.id:
+        # 1d. Mobile & PC Card Battlers, TCGs & Deckbuilders (Marvel SNAP, Pokémon Pocket, Hearthstone, Balatro, Slay the Spire)
+        if "balatro" in profile.id:
+            self._balatro_step = getattr(self, "_balatro_step", 0) + 1
+            bal_actions = [
+                "select_card",
+                "select_card",
+                "select_card",
+                "balatro_play_hand",
+                "select_card",
+                "balatro_discard",
+                "cash_out",
+            ]
+            act = bal_actions[self._balatro_step % len(bal_actions)]
+            return {
+                "action": act,
+                "threat_score": 0.40,
+                "confidence": 0.95,
+                "latency_ms": 0.2,
+                "source": "balatro_poker_reflex",
+                "target_coords": None,
+            }
+
+        if "spire" in profile.id:
+            self._spire_step = getattr(self, "_spire_step", 0) + 1
+            spire_actions = [
+                "play_card_enemy",
+                "play_card_enemy",
+                "play_card_self",
+                "end_turn",
+            ]
+            act = spire_actions[self._spire_step % len(spire_actions)]
+            return {
+                "action": act,
+                "threat_score": 0.50,
+                "confidence": 0.94,
+                "latency_ms": 0.2,
+                "source": "spire_tactical_reflex",
+                "target_coords": None,
+            }
+
+        if "card" in profile.id or "hearthstone" in profile.id:
             self._card_step = getattr(self, "_card_step", 0) + 1
             card_actions = [
                 "play_card_center",
@@ -604,6 +643,38 @@ class UniversalBrain:
                 "confidence": 0.96,
                 "latency_ms": 0.2,
                 "source": "snake_grid_navigation",
+                "target_coords": None,
+            }
+
+        # 1f. Roblox & Minecraft 3D Action/Parkour
+        if "roblox" in profile.id or "minecraft" in profile.id:
+            if scene.nearest_threat and scene.threat_urgency > 0.60:
+                act = "jump"
+            elif len(scene.threats) > 0:
+                act = "attack_mine" if "minecraft" in profile.id else "move_left"
+            else:
+                act = "move_forward"
+            return {
+                "action": act,
+                "threat_score": scene.threat_urgency,
+                "confidence": 0.95,
+                "latency_ms": 0.2,
+                "source": "sandbox_exploration_reflex",
+                "target_coords": None,
+            }
+
+        # 1g. Trackmania & Racing Reflex
+        if "trackmania" in profile.id or "racing" in profile.id:
+            if scene.nearest_threat:
+                act = "turn_left" if scene.nearest_threat.x > 300 else "turn_right"
+            else:
+                act = "accelerate"
+            return {
+                "action": act,
+                "threat_score": scene.threat_urgency,
+                "confidence": 0.96,
+                "latency_ms": 0.2,
+                "source": "racing_apex_reflex",
                 "target_coords": None,
             }
 

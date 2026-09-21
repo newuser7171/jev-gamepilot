@@ -21,7 +21,9 @@ class VisionEngine:
         try:
             import ctypes
             user32 = ctypes.windll.user32
-            hdesk = user32.OpenDesktopW("default", 0, False, 0x10000000)
+            hdesk = user32.OpenInputDesktop(0, False, 0x10000000)
+            if not hdesk:
+                hdesk = user32.OpenDesktopW("default", 0, False, 0x10000000)
             if hdesk:
                 user32.SetThreadDesktop(hdesk)
         except Exception:
@@ -88,9 +90,27 @@ class VisionEngine:
         Returns BGR numpy array.
         """
         t0 = time.perf_counter()
-        raw = self.sct.grab(self.region)
-        # raw is BGRA, convert to BGR
-        frame = np.array(raw)[:, :, :3]
+        frame = None
+        try:
+            raw = self.sct.grab(self.region)
+            frame = np.array(raw)[:, :, :3]
+        except Exception:
+            try:
+                from PIL import ImageGrab
+                bbox = (
+                    self.region["left"],
+                    self.region["top"],
+                    self.region["left"] + self.region["width"],
+                    self.region["top"] + self.region["height"],
+                )
+                img = ImageGrab.grab(bbox=bbox)
+                rgb = np.array(img)
+                frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            except Exception:
+                pass
+
+        if frame is None:
+            frame = np.zeros((self.region["height"], self.region["width"], 3), dtype=np.uint8)
 
         dt = time.perf_counter() - t0
         self.fps = 1.0 / dt if dt > 0 else 60.0
@@ -99,4 +119,7 @@ class VisionEngine:
         return frame
 
     def close(self):
-        self.sct.close()
+        try:
+            self.sct.close()
+        except Exception:
+            pass
