@@ -535,8 +535,12 @@ class UniversalBrain:
                 }
             else:  # in_battle
                 current_elixir = getattr(scene, "elixir", 5)
-                # If elixir is depleted (< 3), hold and charge up
-                if current_elixir < 3:
+                now = time.time()
+                self._last_clash_deploy = getattr(self, "_last_clash_deploy", 0.0)
+
+                # Only hold for elixir recharge if we deployed very recently (< 2.0s ago)
+                # If idle for >= 2.0s, elixir has regenerated -> break wait and deploy!
+                if current_elixir < 3 and (now - self._last_clash_deploy < 2.0):
                     return {
                         "action": "wait",
                         "threat_score": scene.threat_urgency,
@@ -545,6 +549,8 @@ class UniversalBrain:
                         "source": "elixir_recharge_standby",
                         "target_coords": None,
                     }
+
+                self._last_clash_deploy = now
 
                 # If nearest threat is invading our territory, defend that lane!
                 if scene.nearest_threat and scene.threat_urgency > 0.40:

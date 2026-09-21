@@ -244,22 +244,22 @@ class UniversalVision:
             red_cancel = (btn_region[:, :, 2] > 170) & (btn_region[:, :, 1] < 100) & (btn_region[:, :, 0] < 100)
 
             # Check elixir bar in bottom HUD (active in battle)
-            elixir_region = frame_bgr[int(h * 0.96) : int(h * 0.99), int(w * 0.18) : int(w * 0.95)]
+            elixir_region = frame_bgr[int(h * 0.95) : int(h * 0.995), int(w * 0.15) : int(w * 0.98)]
             magenta = (elixir_region[:, :, 2] > 160) & (elixir_region[:, :, 0] > 160) & (elixir_region[:, :, 1] < 120)
 
-            if red_cancel.sum() > 1000:
+            if red_cancel.sum() > 800:
                 scene.game_phase = "matchmaking"
-            elif yellow_pixels.sum() > 4000:
+            elif yellow_pixels.sum() > 2500:
                 scene.game_phase = "main_menu"
-            elif magenta.sum() > 800:
+            elif magenta.sum() > 250:
                 scene.game_phase = "in_battle"
                 # Exact elixir calculation: measure magenta bar pixel width
                 cols = np.where(magenta.sum(axis=0) > 2)[0]
                 if len(cols) > 0:
                     filled_w = len(cols)
-                    scene.elixir = max(0, min(10, int((filled_w - 65) / 73.0 + 0.5)))
+                    scene.elixir = max(1, min(10, int((filled_w - 55) / 73.0 + 0.5)))
                 else:
-                    scene.elixir = 2
+                    scene.elixir = 4  # Default to playable elixir so it never starves
             else:
                 ok_region = frame_bgr[int(h * 0.80) : int(h * 0.90), int(w * 0.35) : int(w * 0.65)]
                 blue_pixels = (ok_region[:, :, 0] > 180) & (ok_region[:, :, 2] < 100)

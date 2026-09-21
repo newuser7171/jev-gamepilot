@@ -153,12 +153,26 @@ class PhoneGamePilot:
                 # 4. Dispatch Physical Android Gesture
                 now = time.time()
                 if action_name == "start_battle":
-                    if now - self.last_battle_launch_time < 7.0:
+                    if now - self.last_battle_launch_time < 6.0:
                         action_name = "wait"
                     else:
                         self.last_battle_launch_time = now
 
-                cooldown = 1.4 if ("clash" in self.profile.id and action_name != "start_battle") else 0.16
+                # Anti-Stall Watchdog: never idle longer than 2.8s in active gameplay
+                phase = getattr(scene, "game_phase", "")
+                if action_name in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > 2.8):
+                    if phase != "matchmaking":
+                        if "clash" in self.profile.id:
+                            if phase == "in_battle":
+                                action_name = "deploy_card_right" if (self.total_actions % 2 == 0) else "deploy_card_left"
+                            elif phase == "main_menu":
+                                action_name = "start_battle"
+                            elif phase == "game_over":
+                                action_name = "confirm_ok"
+                        elif self.profile.actions:
+                            action_name = self.profile.actions[0].name
+
+                cooldown = 1.3 if ("clash" in self.profile.id and action_name != "start_battle") else 0.16
                 if action_name not in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > cooldown):
                     self.adb.dispatch_action(action_name, target_coords=decision.get("target_coords"))
                     self.total_actions += 1
