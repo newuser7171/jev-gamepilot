@@ -250,26 +250,28 @@ class PhoneGamePilot:
                             action_name = self.profile.actions[0].name
 
                 if "clash" in self.profile.id and action_name != "start_battle":
-                    cooldown = 1.3
+                    cooldown = 1.2
                 elif "card" in self.profile.id:
-                    cooldown = 0.85
+                    cooldown = 0.65
                 elif "solitaire" in self.profile.id:
-                    cooldown = 0.32
+                    cooldown = 0.25
                 elif "snake" in self.profile.id:
                     cooldown = 0.12
                 elif "solar" in self.profile.id:
-                    cooldown = 0.45
+                    cooldown = 0.20
                 elif "earntodie" in self.profile.id:
-                    cooldown = 0.28
+                    cooldown = 0.25
                 elif "fifa" in self.profile.id:
-                    cooldown = 0.22
+                    cooldown = 0.20
                 else:
                     cooldown = 0.15
 
-                if action_name not in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > cooldown):
+                is_cooling_down = (now - self.last_action_time <= cooldown)
+                if action_name not in ["wait", "maintain_course", "stand_idle"] and not is_cooling_down:
                     self.adb.dispatch_action(action_name, target_coords=decision.get("target_coords"))
                     self.total_actions += 1
                     self.last_action_time = now
+                    self.last_dispatched_action = action_name
                     console.print(
                         f"[bold green]⚡ [ACTION][/bold green] [bold white]{action_name.upper()}[/] "
                         f"({decision.get('source')} | conf: {decision.get('confidence'):.2f})"
@@ -282,6 +284,8 @@ class PhoneGamePilot:
                     # Status Header Banner (adaptive height & font for landscape vs portrait)
                     header_bg = (20, 22, 32)
                     elixir_info = f" | Elixir: {getattr(scene, 'elixir', 0)}" if "clash" in self.profile.id else ""
+                    last_act = getattr(self, "last_dispatched_action", action_name)
+                    act_status = "COOLDOWN" if is_cooling_down else "ACTIVE"
                     if is_landscape:
                         header_h = 72
                         cv2.rectangle(annotated, (0, 0), (cur_w, header_h), header_bg, -1)
@@ -297,7 +301,7 @@ class PhoneGamePilot:
                             cv2.LINE_AA,
                         )
                         stats_text = (
-                            f"Action: {action_name.upper()} | Urgency: {int(scene.threat_urgency*100)}%{elixir_info} | "
+                            f"Dispatched: {last_act.upper()} [{act_status}] | Urgency: {int(scene.threat_urgency*100)}%{elixir_info} | "
                             f"Actions: {self.total_actions} | FPS: {fps:.1f} | LANDSCAPE"
                         )
                         cv2.putText(
@@ -325,7 +329,7 @@ class PhoneGamePilot:
                             cv2.LINE_AA,
                         )
                         stats_text = (
-                            f"Action: {action_name.upper()} | Urgency: {int(scene.threat_urgency*100)}%{elixir_info} | "
+                            f"Dispatched: {last_act.upper()} [{act_status}] | Urgency: {int(scene.threat_urgency*100)}%{elixir_info} | "
                             f"Actions: {self.total_actions} | FPS: {fps:.1f} | PORTRAIT"
                         )
                         cv2.putText(

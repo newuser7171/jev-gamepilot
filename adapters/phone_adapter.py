@@ -334,45 +334,40 @@ class AdbController:
         return self.capture_frame()
 
     # --- Touch & Gesture Dispatchers ---
+    def _run_shell(self, shell_cmd: str, timeout: float = 3.5):
+        """Executes shell command synchronously to guarantee atomic, collision-free touch events on device."""
+        try:
+            cmd = self._cmd_prefix() + ["shell", shell_cmd]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout)
+        except Exception:
+            pass
+
     def tap(self, x: int, y: int):
         """Sends immediate tap to phone screen coordinates."""
-        cmd = self._cmd_prefix() + ["shell", "input", "tap", str(int(x)), str(int(y))]
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._run_shell(f"input tap {int(x)} {int(y)}")
 
-    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 100):
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 120):
         """Sends swipe gesture across screen coordinates."""
-        cmd = self._cmd_prefix() + [
-            "shell",
-            "input",
-            "swipe",
-            str(int(x1)),
-            str(int(y1)),
-            str(int(x2)),
-            str(int(y2)),
-            str(int(duration_ms)),
-        ]
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._run_shell(f"input swipe {int(x1)} {int(y1)} {int(x2)} {int(y2)} {int(duration_ms)}")
 
-    def hold(self, x: int, y: int, duration_ms: int = 250):
+    def hold(self, x: int, y: int, duration_ms: int = 350):
         """Sends press-and-hold touch gesture for sustained gas throttle, power shots, or continuous beams."""
         self.swipe(x, y, x, y, duration_ms=duration_ms)
 
-    def double_tap(self, x: int, y: int, delay_sec: float = 0.06):
+    def double_tap(self, x: int, y: int, delay_sec: float = 0.08):
         """Chains rapid double-tap (activates hoverboard shield, nitro bursts, revives)."""
         shell_script = f"input tap {int(x)} {int(y)} && sleep {delay_sec} && input tap {int(x)} {int(y)}"
-        cmd = self._cmd_prefix() + ["shell", shell_script]
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._run_shell(shell_script)
 
     def flick(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 65):
         """Rapid directional skill flick (finesse curl, chip shot, 5-star skill moves)."""
         self.swipe(x1, y1, x2, y2, duration_ms=duration_ms)
 
-    def chained_taps(self, points: List[Tuple[int, int]], delay_sec: float = 0.04):
+    def chained_taps(self, points: List[Tuple[int, int]], delay_sec: float = 0.05):
         """Executes a cluster of precision taps across target points in a single kernel batch."""
         parts = [f"input tap {int(pt[0])} {int(pt[1])}" for pt in points]
         shell_script = f" && sleep {delay_sec} && ".join(parts)
-        cmd = self._cmd_prefix() + ["shell", shell_script]
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._run_shell(shell_script)
 
     def swipe_up(self, duration_ms: int = 80):
         """Vault / Jump gesture (swipes upward from lower center)."""
@@ -421,8 +416,7 @@ class AdbController:
     def deploy_clash_card(self, card_x: int, card_y: int, target_x: int, target_y: int):
         """Native two-tap deployment: select card in tray then deploy at arena tile."""
         shell_script = f"input tap {int(card_x)} {int(card_y)} && sleep 0.08 && input tap {int(target_x)} {int(target_y)}"
-        cmd = self._cmd_prefix() + ["shell", shell_script]
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._run_shell(shell_script)
 
     def play_card(self, hand_slot: int = 0, target_lane: str = "center"):
         """
@@ -463,7 +457,7 @@ class AdbController:
                 dest_y = int(self.screen_height * 0.52)
 
         # Smooth drag from hand into lane + tap confirm
-        self.swipe(start_x, start_y, dest_x, dest_y, duration_ms=220)
+        self.swipe(start_x, start_y, dest_x, dest_y, duration_ms=320)
 
     def attack_target(self, target_type: str = "face"):
         """
@@ -478,13 +472,13 @@ class AdbController:
             else:
                 tx = int(self.screen_width * 0.50)
                 ty = int(self.screen_height * 0.38)
-            self.swipe(fx, fy, tx, ty, duration_ms=200)
+            self.swipe(fx, fy, tx, ty, duration_ms=260)
         else:
             fx = int(self.screen_width * 0.50)
             fy = int(self.screen_height * 0.60)
             tx = int(self.screen_width * 0.50)
             ty = int(self.screen_height * 0.28)
-            self.swipe(fx, fy, tx, ty, duration_ms=200)
+            self.swipe(fx, fy, tx, ty, duration_ms=260)
 
     def tap_solitaire_stock(self):
         """Taps top stock pile to deal next card(s)."""
@@ -506,21 +500,25 @@ class AdbController:
             wy = int(self.screen_height * 0.125)
         self.tap(wx, wy)
 
-    def tap_solitaire_column(self, col_idx: int = 0, y_ratio: float = 0.55):
+    def tap_solitaire_column(self, col_idx: int = 0, y_ratio: float = 0.50):
         """
         Taps exposed card in tableau column (0-6).
         Mobile solitaire has built-in tap-to-move which automatically sends valid cards to foundations or tableau!
+        Executes an atomic 2-depth cascade tap to reliably hit short (1-2 cards) or deep (5-8 cards) stacks.
         """
         col_idx = max(0, min(6, col_idx))
         if self.is_landscape:
             col_ratios = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
             cx = int(self.screen_width * col_ratios[col_idx])
-            cy = int(self.screen_height * y_ratio)
+            y1 = int(self.screen_height * 0.45)
+            y2 = int(self.screen_height * 0.65)
         else:
             col_ratios = [0.10, 0.23, 0.37, 0.50, 0.63, 0.77, 0.90]
             cx = int(self.screen_width * col_ratios[col_idx])
-            cy = int(self.screen_height * y_ratio)
-        self.tap(cx, cy)
+            y1 = int(self.screen_height * 0.38)
+            y2 = int(self.screen_height * 0.56)
+        shell_script = f"input tap {cx} {y1} && sleep 0.05 && input tap {cx} {y2}"
+        self._run_shell(shell_script)
 
     def drag_solitaire_transfer(self, from_col: int = 0, to_col: int = 1):
         """Drags card/sequence between two tableau columns."""
@@ -535,8 +533,8 @@ class AdbController:
             col_ratios = [0.10, 0.23, 0.37, 0.50, 0.63, 0.77, 0.90]
             fx = int(self.screen_width * col_ratios[from_col])
             tx = int(self.screen_width * col_ratios[to_col])
-            y = int(self.screen_height * 0.55)
-        self.swipe(fx, y, tx, y, duration_ms=220)
+            y = int(self.screen_height * 0.52)
+        self.swipe(fx, y, tx, y, duration_ms=260)
 
     def tap_solitaire_foundation(self, found_idx: int = 0):
         """Taps one of the 4 foundation piles (Aces to Kings)."""
@@ -558,10 +556,11 @@ class AdbController:
         """
         if self.is_landscape:
             col_ratios = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
-            pts = [(int(self.screen_width * r), int(self.screen_height * 0.55)) for r in col_ratios]
+            y = int(self.screen_height * 0.55)
         else:
             col_ratios = [0.10, 0.23, 0.37, 0.50, 0.63, 0.77, 0.90]
-            pts = [(int(self.screen_width * r), int(self.screen_height * 0.55)) for r in col_ratios]
+            y = int(self.screen_height * 0.52)
+        pts = [(int(self.screen_width * r), y) for r in col_ratios]
         self.chained_taps(pts, delay_sec=0.06)
 
     def trigger_auto_restart(self):
@@ -736,32 +735,63 @@ class AdbController:
             jx2 = int(self.screen_width * 0.25)
             self.swipe(jx1, jy, jx2, jy, duration_ms=260)
 
-        # 8. Solar Smash (Landscape Optimized Superweapons)
+        # 8. Solar Smash (Landscape & Portrait Planetary Superweapons)
         elif "fire_laser" in act:
-            # Tap weapon drawer right edge, then sustained thermal core drill
-            wx = int(self.screen_width * 0.94)
-            wy = int(self.screen_height * 0.38)
-            self.tap(wx, wy)
-            time.sleep(0.03)
             cx = self.screen_width // 2
             cy = self.screen_height // 2
-            self.hold(cx, cy, duration_ms=850)
+            if self.is_landscape:
+                cat_x = int(self.screen_width * 0.94)
+                cat_y = int(self.screen_height * 0.56)
+                sub_x = int(self.screen_width * 0.85)
+                sub_y = int(self.screen_height * 0.56)
+            else:
+                cat_x = int(self.screen_width * 0.40)
+                cat_y = int(self.screen_height * 0.863)
+                sub_x = int(self.screen_width * 0.21)
+                sub_y = int(self.screen_height * 0.803)
+            shell_script = f"input tap {cat_x} {cat_y} && sleep 0.12 && input tap {sub_x} {sub_y} && sleep 0.12 && input swipe {cx} {cy} {cx} {cy} 850"
+            self._run_shell(shell_script)
+
         elif "orbital_strike" in act:
-            # Cluster bombardment salvo across 3 target coordinates
             cx = self.screen_width // 2
             cy = self.screen_height // 2
-            self.chained_taps([(cx - 90, cy - 60), (cx + 80, cy + 50), (cx, cy + 80)], delay_sec=0.04)
+            if self.is_landscape:
+                cat_x = int(self.screen_width * 0.94)
+                cat_y = int(self.screen_height * 0.38)
+                sub_x = int(self.screen_width * 0.85)
+                sub_y = int(self.screen_height * 0.38)
+            else:
+                cat_x = int(self.screen_width * 0.27)
+                cat_y = int(self.screen_height * 0.863)
+                sub_x = int(self.screen_width * 0.21)
+                sub_y = int(self.screen_height * 0.803)
+            shell_script = (
+                f"input tap {cat_x} {cat_y} && sleep 0.10 && input tap {sub_x} {sub_y} && sleep 0.10 && "
+                f"input tap {cx - 80} {cy - 50} && sleep 0.08 && input tap {cx + 70} {cy + 60} && sleep 0.08 && input tap {cx} {cy + 80}"
+            )
+            self._run_shell(shell_script)
+
         elif "launch_meteor" in act:
-            wx = int(self.screen_width * 0.94)
-            wy = int(self.screen_height * 0.50)
-            self.tap(wx, wy)
-            time.sleep(0.03)
-            self.hold(self.screen_width // 2, self.screen_height // 2, duration_ms=200)
+            cx = self.screen_width // 2
+            cy = self.screen_height // 2
+            if self.is_landscape:
+                cat_x = int(self.screen_width * 0.94)
+                cat_y = int(self.screen_height * 0.20)
+                sub_x = int(self.screen_width * 0.85)
+                sub_y = int(self.screen_height * 0.20)
+            else:
+                cat_x = int(self.screen_width * 0.15)
+                cat_y = int(self.screen_height * 0.863)
+                sub_x = int(self.screen_width * 0.08)
+                sub_y = int(self.screen_height * 0.803)
+            shell_script = f"input tap {cat_x} {cat_y} && sleep 0.10 && input tap {sub_x} {sub_y} && sleep 0.10 && input tap {cx} {cy}"
+            self._run_shell(shell_script)
+
         elif "rotate_planet" in act:
-            y = self.screen_height // 2
-            x1 = int(self.screen_width * 0.72)
-            x2 = int(self.screen_width * 0.28)
-            self.swipe(x1, y, x2, y, duration_ms=140)
+            cy = self.screen_height // 2
+            x1 = int(self.screen_width * 0.75)
+            x2 = int(self.screen_width * 0.25)
+            self.swipe(x1, cy, x2, cy, duration_ms=180)
 
         # 9. BitLife & Choice Simulation
         elif "age_up" in act:
@@ -870,9 +900,8 @@ class AdbController:
             # Tap prominent Auto-Complete button or center victory banner
             cx = self.screen_width // 2
             cy = int(self.screen_height * (0.86 if not self.is_landscape else 0.88))
-            self.tap(cx, cy)
-            time.sleep(0.04)
-            self.tap(cx, int(self.screen_height * 0.80))
+            shell_script = f"input tap {cx} {cy} && sleep 0.10 && input tap {cx} {int(self.screen_height * 0.80)}"
+            self._run_shell(shell_script)
         elif "tap_foundation" in act or "foundation" in act:
             self._solitaire_found_idx = (getattr(self, "_solitaire_found_idx", 0) + 1) % 4
             self.tap_solitaire_foundation(self._solitaire_found_idx)
@@ -891,3 +920,13 @@ class AdbController:
         # 13. Auto-revive / restart / continue
         elif "restart" in act or "revive" in act or "continue" in act:
             self.trigger_auto_restart()
+
+        # 14. Snake & Grid Arcades
+        elif "turn_up" in act or "snake_up" in act:
+            self.swipe_up(duration_ms=60)
+        elif "turn_down" in act or "snake_down" in act:
+            self.swipe_down(duration_ms=60)
+        elif "turn_left" in act or "snake_left" in act:
+            self.swipe_left(duration_ms=60)
+        elif "turn_right" in act or "snake_right" in act:
+            self.swipe_right(duration_ms=60)

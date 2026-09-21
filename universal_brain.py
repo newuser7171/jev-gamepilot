@@ -511,13 +511,8 @@ class UniversalBrain:
         - Evaluates Flappy Bird gap height vs bird fall velocity.
         """
         # 1. Target Clicker / Fruit Ninja Slicing
-        if (profile.category == "clicker" or "fruit" in profile.id or "solar" in profile.id) and scene.best_target:
-            if "fruit" in profile.id:
-                action_name = "combo_slice" if len(scene.targets) >= 2 else "slice_target"
-            elif "solar" in profile.id:
-                action_name = "fire_laser" if scene.threat_urgency < 0.50 else "orbital_strike"
-            else:
-                action_name = "click_target"
+        if (profile.category == "clicker" or "fruit" in profile.id) and scene.best_target:
+            action_name = "combo_slice" if len(scene.targets) >= 2 else "slice_target"
             return {
                 "action": action_name,
                 "threat_score": 0.95,
@@ -528,6 +523,88 @@ class UniversalBrain:
                     scene.best_target.click_x,
                     scene.best_target.click_y,
                 ),
+            }
+
+        # 1b. Solar Smash Planetary Superweapons (Continuous Destruction Reflex)
+        if "solar" in profile.id:
+            self._solar_strike_step = getattr(self, "_solar_strike_step", 0) + 1
+            if self._solar_strike_step % 3 == 0:
+                act = "launch_meteor"
+            elif self._solar_strike_step % 2 == 0:
+                act = "orbital_strike"
+            else:
+                act = "fire_laser"
+            return {
+                "action": act,
+                "threat_score": 0.90,
+                "confidence": 0.98,
+                "latency_ms": 0.2,
+                "source": "planetary_destruction_reflex",
+                "target_coords": None,
+            }
+
+        # 1c. Solitaire & Classic Card Puzzles (Continuous Solution Cascade)
+        if "solitaire" in profile.id:
+            self._sol_step = getattr(self, "_sol_step", 0) + 1
+            sol_actions = [
+                "sweep_all_columns",
+                "tap_col_1", "tap_col_2", "tap_col_3",
+                "tap_col_4", "tap_col_5", "tap_col_6", "tap_col_7",
+                "tap_waste_card",
+                "draw_stock",
+                "auto_complete",
+            ]
+            act = sol_actions[self._sol_step % len(sol_actions)]
+            return {
+                "action": act,
+                "threat_score": 0.10,
+                "confidence": 0.95,
+                "latency_ms": 0.2,
+                "source": "solitaire_card_solver",
+                "target_coords": None,
+            }
+
+        # 1d. Mobile Card Battlers & TCGs (Marvel SNAP, Pokémon Pocket, Hearthstone, Balatro)
+        if "card" in profile.id:
+            self._card_step = getattr(self, "_card_step", 0) + 1
+            card_actions = [
+                "play_card_center",
+                "play_card_left",
+                "play_card_right",
+                "attack_face",
+                "hero_power",
+                "end_turn",
+            ]
+            act = card_actions[self._card_step % len(card_actions)]
+            return {
+                "action": act,
+                "threat_score": 0.50,
+                "confidence": 0.94,
+                "latency_ms": 0.2,
+                "source": "tcg_battle_tactics",
+                "target_coords": None,
+            }
+
+        # 1e. Snake & Grid Arcades (4-Way Navigation Reflex)
+        if "snake" in profile.id:
+            if scene.best_target and scene.player:
+                dx = scene.best_target.click_x - scene.player.x
+                dy = scene.best_target.click_y - scene.player.y
+                if abs(dx) > abs(dy):
+                    act = "turn_right" if dx > 0 else "turn_left"
+                else:
+                    act = "turn_down" if dy > 0 else "turn_up"
+            else:
+                self._snake_step = getattr(self, "_snake_step", 0) + 1
+                snake_rot = ["turn_right", "turn_down", "turn_left", "turn_up"]
+                act = snake_rot[self._snake_step % len(snake_rot)]
+            return {
+                "action": act,
+                "threat_score": 0.70,
+                "confidence": 0.96,
+                "latency_ms": 0.2,
+                "source": "snake_grid_navigation",
+                "target_coords": None,
             }
 
         # 2. Clash Royale & Tower RTS reflex
