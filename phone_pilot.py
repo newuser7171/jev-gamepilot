@@ -196,6 +196,8 @@ class PhoneGamePilot:
                     max_idle = 1.10  # Active slide/jump to maintain momentum
                 elif "clash" in self.profile.id:
                     max_idle = 2.20  # Elixir pacing
+                elif "card" in self.profile.id:
+                    max_idle = 3.50  # Card battle turn pacing
                 else:
                     max_idle = 1.50  # General default
 
@@ -218,6 +220,9 @@ class PhoneGamePilot:
                         elif "fifa" in self.profile.id:
                             fifa_rot = ["dribble_forward", "sprint_tackle", "pass", "through_pass"]
                             action_name = fifa_rot[self.total_actions % len(fifa_rot)]
+                        elif "card" in self.profile.id:
+                            card_rot = ["play_card_center", "play_card_left", "play_card_right", "attack_face", "end_turn"]
+                            action_name = card_rot[self.total_actions % len(card_rot)]
                         elif "runner" in self.profile.id or self.profile.category == "runner":
                             action_name = "slide" if (self.total_actions % 2 == 0) else "jump"
                         elif "solar" in self.profile.id:
@@ -229,6 +234,8 @@ class PhoneGamePilot:
 
                 if "clash" in self.profile.id and action_name != "start_battle":
                     cooldown = 1.3
+                elif "card" in self.profile.id:
+                    cooldown = 0.85
                 elif "solar" in self.profile.id:
                     cooldown = 0.45
                 elif "earntodie" in self.profile.id:

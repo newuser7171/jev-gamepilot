@@ -17,8 +17,9 @@ echo  6. EA Sports FC / FIFA Mobile (Sprint, Pass, Shoot)
 echo  7. Solar Smash ^& Sandboxes (Laser, Asteroids, Superweapons)
 echo  8. BitLife ^& Choice Sims (Age Progression, Scenario Decisions)
 echo  9. Flappy Bird / One-Tap Arcades (Precision Taps)
+echo 10. Card Games ^& TCGs (Marvel SNAP, Hearthstone, Pokemon, Balatro)
 echo.
-set /p choice="Select mode [1-9] (default: 1): "
+set /p choice="Select mode [1-10] (default: 1): "
 
 if "%choice%"=="2" (
     python phone_pilot.py --profile runner_3lane
@@ -36,6 +37,8 @@ if "%choice%"=="2" (
     python phone_pilot.py --profile mobile_bitlife
 ) else if "%choice%"=="9" (
     python phone_pilot.py --profile flappy_tap
+) else if "%choice%"=="10" (
+    python phone_pilot.py --profile mobile_card_battler
 ) else (
     python phone_pilot.py --profile auto
 )

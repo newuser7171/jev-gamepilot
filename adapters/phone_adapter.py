@@ -40,6 +40,19 @@ PACKAGE_PROFILE_MAP = {
     "org.shadps4.android": "mobile_universal",
     "dev.eden.eden_emulator": "mobile_universal",
     "com.izzy2lost.psx2": "retro_platformer",
+    # Mobile Card Battlers, TCGs & Deckbuilders
+    "com.nvsgames.snap": "mobile_card_battler",
+    "jp.pokemon.pokemontcgp": "mobile_card_battler",
+    "com.pokemon.tcgl": "mobile_card_battler",
+    "com.blizzard.wtcg.hearthstone": "mobile_card_battler",
+    "jp.konami.masterduel": "mobile_card_battler",
+    "jp.konami.duellinks": "mobile_card_battler",
+    "com.wizards.mtga": "mobile_card_battler",
+    "com.riotgames.legendsofruneterra": "mobile_card_battler",
+    "com.humble.SlayTheSpire": "mobile_card_battler",
+    "com.localthunk.balatro": "mobile_card_battler",
+    "com.mattel163.uno": "mobile_card_battler",
+    "com.mobilityware.solitaire": "mobile_card_battler",
 }
 
 
@@ -152,6 +165,22 @@ class AdbController:
             return "mobile_solarsmash", pkg
         elif "bitlife" in pkg_lower or "life" in pkg_lower or "sim" in pkg_lower or "choice" in pkg_lower:
             return "mobile_bitlife", pkg
+        elif (
+            "snap" in pkg_lower
+            or "card" in pkg_lower
+            or "tcg" in pkg_lower
+            or "hearthstone" in pkg_lower
+            or "duel" in pkg_lower
+            or "magic" in pkg_lower
+            or "mtg" in pkg_lower
+            or "deck" in pkg_lower
+            or "spire" in pkg_lower
+            or "balatro" in pkg_lower
+            or "uno" in pkg_lower
+            or "solitaire" in pkg_lower
+            or "poker" in pkg_lower
+        ):
+            return "mobile_card_battler", pkg
 
         return "mobile_universal", pkg
 
@@ -379,6 +408,68 @@ class AdbController:
         cmd = self._cmd_prefix() + ["shell", shell_script]
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def play_card(self, hand_slot: int = 0, target_lane: str = "center"):
+        """
+        Executes native drag-to-play gesture from hand tray onto the battlefield or lane.
+        Dynamically adapts geometry for Portrait (Marvel SNAP, Pokémon Pocket) and Landscape (Hearthstone, MTG, Balatro).
+        """
+        if self.is_landscape:
+            # Landscape Card Games (Hearthstone, MTG Arena, Yu-Gi-Oh, Balatro, Slay the Spire)
+            slot_ratios = [0.32, 0.40, 0.48, 0.56, 0.64, 0.72]
+            slot_x = slot_ratios[hand_slot % len(slot_ratios)]
+            start_x = int(self.screen_width * slot_x)
+            start_y = int(self.screen_height * 0.93)
+
+            if target_lane == "left":
+                dest_x = int(self.screen_width * 0.38)
+                dest_y = int(self.screen_height * 0.58)
+            elif target_lane == "right":
+                dest_x = int(self.screen_width * 0.62)
+                dest_y = int(self.screen_height * 0.58)
+            else:  # center
+                dest_x = int(self.screen_width * 0.50)
+                dest_y = int(self.screen_height * 0.58)
+        else:
+            # Portrait Card Games (Marvel SNAP, Pokémon TCG Pocket, Solitaire)
+            slot_ratios = [0.22, 0.40, 0.60, 0.78]
+            slot_x = slot_ratios[hand_slot % len(slot_ratios)]
+            start_x = int(self.screen_width * slot_x)
+            start_y = int(self.screen_height * 0.88)
+
+            if target_lane == "left":
+                dest_x = int(self.screen_width * 0.23)
+                dest_y = int(self.screen_height * 0.52)
+            elif target_lane == "right":
+                dest_x = int(self.screen_width * 0.77)
+                dest_y = int(self.screen_height * 0.52)
+            else:  # center
+                dest_x = int(self.screen_width * 0.50)
+                dest_y = int(self.screen_height * 0.52)
+
+        # Smooth drag from hand into lane + tap confirm
+        self.swipe(start_x, start_y, dest_x, dest_y, duration_ms=220)
+
+    def attack_target(self, target_type: str = "face"):
+        """
+        Executes minion combat arrow: drags from friendly minion position to target.
+        """
+        if self.is_landscape:
+            fx = int(self.screen_width * 0.50)
+            fy = int(self.screen_height * 0.60)
+            if target_type == "face":
+                tx = int(self.screen_width * 0.50)
+                ty = int(self.screen_height * 0.18)
+            else:
+                tx = int(self.screen_width * 0.50)
+                ty = int(self.screen_height * 0.38)
+            self.swipe(fx, fy, tx, ty, duration_ms=200)
+        else:
+            fx = int(self.screen_width * 0.50)
+            fy = int(self.screen_height * 0.60)
+            tx = int(self.screen_width * 0.50)
+            ty = int(self.screen_height * 0.28)
+            self.swipe(fx, fy, tx, ty, duration_ms=200)
+
     def trigger_auto_restart(self):
         """Taps the center or lower-center screen to dismiss Game Over / Play Again dialogs."""
         cx = self.screen_width // 2
@@ -602,7 +693,60 @@ class AdbController:
             time.sleep(0.04)
             self.tap(cx, int(self.screen_height * 0.82))
 
-        # 10. Precision target clicker
+        # 10. Mobile Card Battlers, TCGs & Deckbuilders (Marvel SNAP, Hearthstone, Pokémon, Balatro)
+        elif "play_card" in act:
+            self._card_slot_idx = (getattr(self, "_card_slot_idx", 0) + 1) % (6 if self.is_landscape else 4)
+            lane = "center"
+            if "left" in act:
+                lane = "left"
+            elif "right" in act:
+                lane = "right"
+            self.play_card(hand_slot=self._card_slot_idx, target_lane=lane)
+        elif "attack_face" in act:
+            self.attack_target(target_type="face")
+        elif "attack_minion" in act or "trade_minion" in act:
+            self.attack_target(target_type="minion")
+        elif "hero_power" in act or "snap_cube" in act:
+            if self.is_landscape:
+                hx = int(self.screen_width * 0.64)
+                hy = int(self.screen_height * 0.76)
+            else:
+                hx = int(self.screen_width * 0.50)
+                hy = int(self.screen_height * 0.08)
+            self.tap(hx, hy)
+        elif "end_turn" in act or "pass_turn" in act or "done" in act:
+            if self.is_landscape:
+                ex = int(self.screen_width * 0.89)
+                ey = int(self.screen_height * 0.49)
+            else:
+                ex = int(self.screen_width * 0.85)
+                ey = int(self.screen_height * 0.92)
+            self.tap(ex, ey)
+        elif "balatro_play_hand" in act or "play_hand" in act:
+            bx = int(self.screen_width * 0.38)
+            by = int(self.screen_height * 0.76)
+            self.tap(bx, by)
+        elif "balatro_discard" in act or "discard" in act:
+            dx = int(self.screen_width * 0.62)
+            dy = int(self.screen_height * 0.76)
+            self.tap(dx, dy)
+        elif "select_card" in act:
+            self._card_slot_idx = (getattr(self, "_card_slot_idx", 0) + 1) % (6 if self.is_landscape else 4)
+            if self.is_landscape:
+                slot_ratios = [0.32, 0.40, 0.48, 0.56, 0.64, 0.72]
+                sx = int(self.screen_width * slot_ratios[self._card_slot_idx])
+                sy = int(self.screen_height * 0.93)
+            else:
+                slot_ratios = [0.22, 0.40, 0.60, 0.78]
+                sx = int(self.screen_width * slot_ratios[self._card_slot_idx])
+                sy = int(self.screen_height * 0.88)
+            self.tap(sx, sy)
+        elif "confirm_choice" in act or "claim" in act:
+            cx = int(self.screen_width * 0.50)
+            cy = int(self.screen_height * (0.80 if self.is_landscape else 0.88))
+            self.tap(cx, cy)
+
+        # 11. Precision target clicker
         elif "click" in act or "target" in act:
             if target_coords:
                 self.tap(target_coords[0], target_coords[1])
@@ -611,6 +755,6 @@ class AdbController:
                 cy = self.screen_height // 2
                 self.tap(cx, cy)
 
-        # 11. Auto-revive / restart / continue
+        # 12. Auto-revive / restart / continue
         elif "restart" in act or "revive" in act or "continue" in act:
             self.trigger_auto_restart()

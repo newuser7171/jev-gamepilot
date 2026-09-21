@@ -520,6 +520,85 @@ DEFAULT_PROFILES: List[GameProfile] = [
             ),
         ],
     ),
+    GameProfile(
+        id="mobile_card_battler",
+        name="🃏 Card Games, TCGs & Deckbuilders",
+        category="strategy",
+        description="Autonomous card player for Marvel SNAP, Pokémon TCG, Hearthstone, MTG Arena, Yu-Gi-Oh, Balatro, Slay the Spire, and Solitaire with drag-to-play, minion attacks, and turn passing",
+        default_window_keyword="card",
+        scan_direction="omnidirectional",
+        auto_restart_key="space",
+        is_builtin=True,
+        actions=[
+            GameAction(
+                name="play_card_center",
+                key="mouse_left",
+                description="Drag active card from bottom hand tray into center battlefield or middle location",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="play_card_left",
+                key="mouse_left",
+                description="Drag card from hand tray into left lane or drop zone",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="play_card_right",
+                key="mouse_left",
+                description="Drag card from hand tray into right lane or drop zone",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="attack_face",
+                key="mouse_left",
+                description="Direct friendly minion attack arrow directly at enemy hero / face",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="attack_minion",
+                key="mouse_left",
+                description="Direct friendly minion attack arrow to trade into enemy frontline creature",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="hero_power",
+                key="mouse_left",
+                description="Activate Leader ability, Hero Power, or trigger Cosmic SNAP Cube",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="end_turn",
+                key="space",
+                description="Tap End Turn / Done / Pass button to pass priority to opponent",
+            ),
+            GameAction(
+                name="balatro_play_hand",
+                key="enter",
+                description="Trigger Balatro Play Hand button to score played poker combination",
+            ),
+            GameAction(
+                name="balatro_discard",
+                key="backspace",
+                description="Trigger Balatro Discard button to cycle unneeded cards",
+            ),
+            GameAction(
+                name="select_card",
+                key="mouse_left",
+                description="Tap card in hand to inspect, select, or queue for play",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="confirm_choice",
+                key="enter",
+                description="Confirm battle prompt, mulligan choice, or claim victory rewards",
+            ),
+            GameAction(
+                name="wait",
+                key="none",
+                description="Observe opponent turn, evaluate board state, and accumulate energy/mana",
+            ),
+        ],
+    ),
 ]
 
 
