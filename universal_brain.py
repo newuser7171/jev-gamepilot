@@ -275,15 +275,25 @@ class UniversalBrain:
         if profile is None:
             from profile_manager import ProfileManager
             profile = ProfileManager().get_profile("mobile_universal")
+        return self.get_action(profile, scene)
+
+    def get_action(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Dict[str, Any]:
+        """Evaluates scene telemetry and returns an actionable decision dictionary."""
         res = self.query_jev_universal(profile, scene)
         if not res:
             res = {
-                "action": scene.recommended_action or "wait",
-                "threat_score": scene.threat_urgency,
+                "action": getattr(scene, "recommended_action", "wait") or "wait",
+                "threat_score": getattr(scene, "threat_urgency", 0.0),
                 "confidence": 0.88,
                 "latency_ms": 1.0,
                 "source": "heuristic_reflex",
+                "target_coords": getattr(scene, "target_coords", None),
             }
+        # Ensure target_coords are preserved if available on scene
+        if not res.get("target_coords") and getattr(scene, "target_coords", None):
+            res["target_coords"] = scene.target_coords
         return res
 
     def _build_verbal_state(
@@ -346,14 +356,17 @@ class UniversalBrain:
 
         # 8 Ball Pool telemetry
         if "8ball" in profile.id or "pool" in profile.id:
-            if scene.best_target and scene.player:
+            if getattr(scene, "balls_moving", False):
+                parts.append("Balls are currently moving across the table felt. Player must wait until all balls come to a complete standstill.")
+            elif not getattr(scene, "cue_ready", False):
+                parts.append("The cue stick is not positioned or it is the opponent's turn. Player must wait.")
+            elif getattr(scene, "game_phase", "") == "aiming" and getattr(scene, "target_coords", None):
                 parts.append(
-                    f"Cue ball is located at ({scene.player.click_x}, {scene.player.click_y}) on the billiard table. "
-                    f"Optimal target pocket is locked at ({scene.best_target.click_x}, {scene.best_target.click_y}). "
-                    f"Aim trajectory is established. Cue power stroke is ready."
+                    f"Cue stick is ready and aligned. Target ghost ball is at {scene.target_coords} with a clean {scene.cut_angle_deg} degree cut angle. "
+                    f"Recommended shot power is {int(scene.shot_power * 100)}%. Ready to execute shot."
                 )
             else:
-                parts.append("Cue ball on felt. Balls are in motion or awaiting turn.")
+                parts.append("Opening break rack or table layout ready. Ready to execute opening break shot.")
 
         return " ".join(parts)
 

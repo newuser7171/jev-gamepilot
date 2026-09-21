@@ -644,14 +644,40 @@ class AdbController:
         cy = int(self.screen_height * 0.75)
         self.tap(cx, cy)
 
-    def aim_8ball_target(self, target_x: int, target_y: int):
+    def aim_8ball_target(
+        self,
+        target_x: int,
+        target_y: int,
+        cue_x: Optional[int] = None,
+        cue_y: Optional[int] = None,
+    ):
         """
-        Rotates cue stick in 8 Ball Pool to align along the target trajectory.
-        Dragging smoothly outside the cue ball adjusts the laser guideline.
+        Aims cue stick in 8 Ball Pool toward the target ball or ghost-ball coordinate.
+        Snaps cue stick by tapping on the target vector, then drags smoothly along the felt.
         """
-        cx = self.screen_width // 2
-        cy = self.screen_height // 2
-        self.swipe(cx, cy, target_x, target_y, duration_ms=180)
+        # 1. Direct aim tap: snaps cue line directly toward the target ball
+        self.tap(target_x, target_y)
+        time.sleep(0.08)
+
+        # 2. Refinement drag: if cue position known, drag slightly outward along the shot angle
+        if cue_x is not None and cue_y is not None:
+            dx = target_x - cue_x
+            dy = target_y - cue_y
+            dist = math.hypot(dx, dy)
+            if dist > 10:
+                ux = dx / dist
+                uy = dy / dist
+                # Drag across opposite cue stick tail to finalize alignment
+                tail_x = int(cue_x - ux * 160)
+                tail_y = int(cue_y - uy * 160)
+                head_x = int(cue_x - ux * 220)
+                head_y = int(cue_y - uy * 220)
+                # Keep inside screen bounds
+                tail_x = max(100, min(self.screen_width - 100, tail_x))
+                tail_y = max(100, min(self.screen_height - 100, tail_y))
+                head_x = max(100, min(self.screen_width - 100, head_x))
+                head_y = max(100, min(self.screen_height - 100, head_y))
+                self.swipe(tail_x, tail_y, head_x, head_y, duration_ms=120)
 
     def fine_tune_8ball_aim(self, direction: str = "left"):
         """Nudges aiming wheel on side for sub-pixel alignment."""
@@ -663,14 +689,35 @@ class AdbController:
     def shoot_8ball_cue(self, power_pct: float = 0.75):
         """
         Pulls down the power meter cue stick on the left edge and releases to shoot.
-        power_pct: 0.10 (gentle safety pot) to 1.0 (maximum break shot).
+        Calibrated to Miniclip power slider: x ~ 8% screen width, y ~ 38% to 83% screen height.
+        power_pct: 0.15 (gentle touch pot) to 1.0 (maximum break shot).
         """
-        power_pct = max(0.10, min(1.0, power_pct))
-        px = int(self.screen_width * 0.065)
-        py_top = int(self.screen_height * 0.30)
-        py_bot = int(self.screen_height * 0.85)
+        power_pct = max(0.15, min(1.0, power_pct))
+        px = int(self.screen_width * 0.080)
+        py_top = int(self.screen_height * 0.380)
+        py_bot = int(self.screen_height * 0.830)
         py_pull = int(py_top + power_pct * (py_bot - py_top))
-        self.swipe(px, py_top, px, py_pull, duration_ms=int(180 + power_pct * 120))
+        # Drag straight down along cue stick rail and release
+        self.swipe(px, py_top, px, py_pull, duration_ms=int(220 + power_pct * 140))
+
+    def execute_8ball_shot(
+        self,
+        target_x: int,
+        target_y: int,
+        power_pct: float = 0.65,
+        cue_x: Optional[int] = None,
+        cue_y: Optional[int] = None,
+    ):
+        """
+        Executes complete professional billiards shot lifecycle:
+        1. Aim and align cue stick to target ghost ball.
+        2. Wait for cue rotation animation to settle.
+        3. Pull left power slider to calculated impulse and release.
+        """
+        self.aim_8ball_target(target_x, target_y, cue_x=cue_x, cue_y=cue_y)
+        time.sleep(0.65)  # Allow cue stick rotation to complete and lock
+        self.shoot_8ball_cue(power_pct=power_pct)
+        time.sleep(0.35)
 
     def set_8ball_spin(self, spin_x: float = 0.0, spin_y: float = 0.0):
         """
@@ -689,12 +736,12 @@ class AdbController:
         """Taps designated pocket to call shot on the 8-ball."""
         w, h = self.screen_width, self.screen_height
         pockets = {
-            "tl": (int(w * 0.12), int(h * 0.18)),
-            "tm": (int(w * 0.50), int(h * 0.15)),
-            "tr": (int(w * 0.88), int(h * 0.18)),
-            "bl": (int(w * 0.12), int(h * 0.82)),
-            "bm": (int(w * 0.50), int(h * 0.85)),
-            "br": (int(w * 0.88), int(h * 0.82)),
+            "tl": (int(w * 0.109), int(h * 0.171)),
+            "tm": (int(w * 0.500), int(h * 0.139)),
+            "tr": (int(w * 0.891), int(h * 0.171)),
+            "bl": (int(w * 0.109), int(h * 0.829)),
+            "bm": (int(w * 0.500), int(h * 0.861)),
+            "br": (int(w * 0.891), int(h * 0.829)),
         }
         pt = pockets.get(pocket_key.lower()[:2], pockets["tm"])
         self.tap(pt[0], pt[1])
@@ -1071,10 +1118,16 @@ class AdbController:
             self.swipe_right(duration_ms=60)
 
         # 15. 8 Ball Pool & Billiards (Miniclip / Real Pool)
+        elif "execute_shot" in act or "execute_8ball_shot" in act or "pot_ball" in act:
+            if target_coords and len(target_coords) == 2:
+                tx, ty = target_coords
+            else:
+                tx, ty = int(self.screen_width * 0.50), int(self.screen_height * 0.50)
+            self.execute_8ball_shot(tx, ty, power_pct=0.65)
         elif "break_shot" in act or ("break" in act and "auto" not in act):
             self.shoot_8ball_cue(power_pct=1.0)
         elif "shoot_power" in act or "shoot" in act:
-            self.shoot_8ball_cue(power_pct=0.75)
+            self.shoot_8ball_cue(power_pct=0.65)
         elif "aim_target" in act or "aim" in act or "pot" in act:
             if target_coords and len(target_coords) == 2:
                 self.aim_8ball_target(target_coords[0], target_coords[1])

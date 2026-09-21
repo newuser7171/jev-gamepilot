@@ -21,15 +21,20 @@ def run_tests():
     print("\n2. Testing Universal Vision 8 Ball Pool perception...")
     from universal_vision import UniversalVision
     uv = UniversalVision()
-    # Create synthetic pool table frame (green felt with white cue ball)
-    test_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-    # Green felt table
-    test_frame[100:620, 150:1130] = [30, 120, 40]
-    # White cue ball at center
     import cv2
-    cv2.circle(test_frame, (640, 360), 12, (255, 255, 255), -1)
-    # Red target ball
-    cv2.circle(test_frame, (800, 360), 12, (0, 0, 220), -1)
+    import os
+    if os.path.exists("pool_screen.png"):
+        test_frame = cv2.imread("pool_screen.png")
+    else:
+        # Create synthetic pool table frame with left cue stick
+        test_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        test_frame[100:620, 150:1130] = [180, 150, 80]
+        # Cue power stick on left rail
+        test_frame[int(720*0.35):int(720*0.85), int(1280*0.07):int(1280*0.095)] = [100, 160, 220]
+        # White cue ball
+        cv2.circle(test_frame, (640, 360), 20, (255, 255, 255), -1)
+        # Red target ball
+        cv2.circle(test_frame, (800, 360), 20, (0, 0, 220), -1)
 
     scene = uv.analyze_frame(test_frame, p8_mob)
     print(f"   Vision analyzed: table_detected={scene.table_detected}, cue_ball={scene.cue_ball}, pockets={len(scene.pockets)}")

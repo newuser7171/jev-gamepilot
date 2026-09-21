@@ -45,6 +45,14 @@ class UniversalSceneState:
     table_detected: bool = False
     cue_ball: Optional[Tuple[int, int]] = None
     pockets: List[Tuple[int, int]] = field(default_factory=list)
+    cue_ready: bool = False
+    balls_moving: bool = False
+    target_ball: Optional[Tuple[int, int]] = None
+    ghost_ball: Optional[Tuple[int, int]] = None
+    target_pocket: Optional[Tuple[int, int]] = None
+    target_coords: Optional[Tuple[int, int]] = None
+    cut_angle_deg: float = 0.0
+    shot_power: float = 0.65
 
 
 class UniversalVision:
@@ -329,57 +337,186 @@ class UniversalVision:
                 scene.best_target = auto_target
                 scene.targets = [auto_target]
         elif "8ball" in profile.id or "pool" in profile.id:
-            # 8 Ball Pool Perception:
+            # 8 Ball Pool Autonomous Perception & Shot Physics:
             pockets = [
-                (int(w * 0.12), int(h * 0.18)),  # Top-Left
-                (int(w * 0.50), int(h * 0.15)),  # Top-Mid
-                (int(w * 0.88), int(h * 0.18)),  # Top-Right
-                (int(w * 0.12), int(h * 0.82)),  # Bot-Left
-                (int(w * 0.50), int(h * 0.85)),  # Bot-Mid
-                (int(w * 0.88), int(h * 0.82)),  # Bot-Right
+                (int(w * 0.109), int(h * 0.171)),  # Top-Left
+                (int(w * 0.500), int(h * 0.139)),  # Top-Mid
+                (int(w * 0.891), int(h * 0.171)),  # Top-Right
+                (int(w * 0.109), int(h * 0.829)),  # Bot-Left
+                (int(w * 0.500), int(h * 0.861)),  # Bot-Mid
+                (int(w * 0.891), int(h * 0.829)),  # Bot-Right
             ]
             scene.pockets = pockets
             scene.table_detected = True
 
-            # Detect Cue Ball (Bright white circular cluster on table felt)
-            table_roi = frame_bgr[int(h * 0.15) : int(h * 0.85), int(w * 0.10) : int(w * 0.90)]
-            white_mask = (table_roi[:, :, 0] > 195) & (table_roi[:, :, 1] > 195) & (table_roi[:, :, 2] > 195)
-            cue_x, cue_y = int(w * 0.35), int(h * 0.50)
-            if white_mask.sum() > 25:
-                wy, wx = np.where(white_mask)
-                cue_x = int(np.median(wx)) + int(w * 0.10)
-                cue_y = int(np.median(wy)) + int(h * 0.15)
+            # 1. Table Motion Check (Are balls still rolling across the felt?)
+            table_y1, table_y2 = int(h * 0.16), int(h * 0.84)
+            table_x1, table_x2 = int(w * 0.11), int(w * 0.89)
+            if self.last_frame_gray is not None and self.last_frame_gray.shape == gray.shape:
+                cur_t = gray[table_y1:table_y2, table_x1:table_x2]
+                prev_t = self.last_frame_gray[table_y1:table_y2, table_x1:table_x2]
+                diff = cv2.absdiff(cur_t, prev_t)
+                motion_pixels = int((diff > 25).sum())
+                if motion_pixels > 1200:
+                    scene.balls_moving = True
+                    scene.game_phase = "balls_moving"
+                    scene.recommended_action = "wait"
+                    scene.threat_urgency = 0.10
+                    self.last_frame_gray = gray
+                    return scene
 
-            scene.cue_ball = (cue_x, cue_y)
+            # 2. Left Cue Stick Power Meter Check (Is it our turn and is cue ready?)
+            x1, x2 = int(w * 0.070), int(w * 0.095)
+            y1, y2 = int(h * 0.35), int(h * 0.85)
+            crop_cue = frame_bgr[y1:y2, x1:x2]
+            wood = (crop_cue[:, :, 2] > 180) & (crop_cue[:, :, 1] > 130) & (crop_cue[:, :, 0] < 150)
+            cue_ready = bool(wood.sum() > 300)
+            scene.cue_ready = cue_ready
+
+            if not cue_ready:
+                scene.game_phase = "waiting_for_turn"
+                scene.recommended_action = "wait"
+                scene.threat_urgency = 0.05
+                self.last_frame_gray = gray
+                return scene
+
+            # 3. Detect Balls on Table
+            table_bounds = frame_bgr[table_y1:table_y2, table_x1:table_x2]
+            gray_bounds = gray[table_y1:table_y2, table_x1:table_x2]
+            blurred = cv2.GaussianBlur(gray_bounds, (9, 9), 2)
+            circles = cv2.HoughCircles(
+                blurred,
+                cv2.HOUGH_GRADIENT,
+                dp=1.2,
+                minDist=30,
+                param1=50,
+                param2=22,
+                minRadius=16,
+                maxRadius=28,
+            )
+
+            balls = []
+            cue_ball_pos = None
+
+            if circles is not None:
+                circles = np.round(circles[0, :]).astype("int")
+                for cx, cy, r in circles:
+                    rx, ry = cx + table_x1, cy + table_y1
+                    bgr = frame_bgr[ry, rx].astype(int)
+                    is_white = (bgr[0] > 215) and (bgr[1] > 215) and (bgr[2] > 215)
+                    patch = frame_bgr[max(0, ry - 3) : min(h, ry + 4), max(0, rx - 3) : min(w, rx + 4)]
+                    if patch.size > 0:
+                        is_solid_white = (patch[:, :, 0] > 195).all() and (patch[:, :, 1] > 195).all() and (patch[:, :, 2] > 195).all()
+                    else:
+                        is_solid_white = False
+
+                    balls.append({
+                        "pos": (rx, ry),
+                        "radius": r,
+                        "is_white": bool(is_white or is_solid_white),
+                    })
+
+            # Find Cue Ball (White)
+            white_balls = [b for b in balls if b["is_white"]]
+            if white_balls:
+                best_cb = min(white_balls, key=lambda b: math.hypot(b["pos"][0] - w * 0.5, b["pos"][1] - h * 0.5))
+                cue_ball_pos = best_cb["pos"]
+            else:
+                cue_ball_pos = (int(w * 0.50), int(h * 0.58))
+
+            scene.cue_ball = cue_ball_pos
             scene.player = UniversalEntity(
-                x=cue_x - 16, y=cue_y - 16, w=32, h=32,
-                entity_type="cue_ball", click_x=cue_x, click_y=cue_y
+                x=cue_ball_pos[0] - 16,
+                y=cue_ball_pos[1] - 16,
+                w=32,
+                h=32,
+                entity_type="cue_ball",
+                click_x=cue_ball_pos[0],
+                click_y=cue_ball_pos[1],
             )
 
-            # Choose optimal target pocket
-            best_pocket = pockets[0]
-            best_dist = 99999.0
-            for px, py in pockets:
-                d = math.hypot(px - cue_x, py - cue_y)
-                if 80 < d < best_dist:
-                    best_dist = d
-                    best_pocket = (px, py)
+            # 4. Filter Object Balls & Calculate Optimal Ghost Ball Cut Angle
+            object_balls = [
+                b for b in balls
+                if b["pos"] != cue_ball_pos and math.hypot(b["pos"][0] - cue_ball_pos[0], b["pos"][1] - cue_ball_pos[1]) > 50
+            ]
 
-            aim_target = UniversalEntity(
-                x=best_pocket[0] - 22,
-                y=best_pocket[1] - 22,
-                w=44,
-                h=44,
-                entity_type="target_pocket",
-                confidence=0.96,
-                click_x=best_pocket[0],
-                click_y=best_pocket[1],
-            )
-            scene.best_target = aim_target
-            scene.targets = [aim_target]
-            scene.threat_urgency = 0.65
-            scene.game_phase = "aiming"
-            scene.recommended_action = "shoot_power"
+            best_shot = None
+            best_score = -9999.0
+            cx, cy = cue_ball_pos
+            ball_r = 24
+
+            for ob in object_balls:
+                bx, by = ob["pos"]
+                dist_cue_to_ball = math.hypot(bx - cx, by - cy)
+                if dist_cue_to_ball < 35:
+                    continue
+
+                for px, py in pockets:
+                    dist_ball_to_pocket = math.hypot(px - bx, py - by)
+                    if dist_ball_to_pocket < 30:
+                        continue
+
+                    ux = (px - bx) / dist_ball_to_pocket
+                    uy = (py - by) / dist_ball_to_pocket
+                    gx = int(bx - ux * (ball_r * 2))
+                    gy = int(by - uy * (ball_r * 2))
+
+                    aim_dx = gx - cx
+                    aim_dy = gy - cy
+                    aim_dist = math.hypot(aim_dx, aim_dy)
+                    if aim_dist < 10:
+                        continue
+
+                    dot = (aim_dx * ux + aim_dy * uy) / aim_dist
+                    dot = max(-1.0, min(1.0, dot))
+                    cut_angle_deg = math.degrees(math.acos(dot))
+
+                    if cut_angle_deg > 75:
+                        continue
+
+                    score = 100.0 - (cut_angle_deg * 1.2) - (dist_ball_to_pocket * 0.03) - (dist_cue_to_ball * 0.02)
+                    if score > best_score:
+                        best_score = score
+                        tot_dist = dist_cue_to_ball + dist_ball_to_pocket
+                        power = 0.45 if tot_dist < 600 else (0.65 if tot_dist < 1100 else 0.85)
+                        best_shot = {
+                            "target_ball": (bx, by),
+                            "ghost_ball": (gx, gy),
+                            "pocket": (px, py),
+                            "cut_angle_deg": round(cut_angle_deg, 1),
+                            "power": power,
+                        }
+
+            if best_shot:
+                scene.target_ball = best_shot["target_ball"]
+                scene.ghost_ball = best_shot["ghost_ball"]
+                scene.target_pocket = best_shot["pocket"]
+                scene.target_coords = best_shot["ghost_ball"]
+                scene.cut_angle_deg = best_shot["cut_angle_deg"]
+                scene.shot_power = best_shot["power"]
+                scene.game_phase = "aiming"
+                scene.recommended_action = "execute_shot"
+
+                aim_target = UniversalEntity(
+                    x=best_shot["ghost_ball"][0] - 22,
+                    y=best_shot["ghost_ball"][1] - 22,
+                    w=44,
+                    h=44,
+                    entity_type="ghost_ball",
+                    confidence=0.96,
+                    click_x=best_shot["ghost_ball"][0],
+                    click_y=best_shot["ghost_ball"][1],
+                )
+                scene.best_target = aim_target
+                scene.targets = [aim_target]
+                scene.threat_urgency = 0.70
+            else:
+                scene.game_phase = "break_ready"
+                scene.recommended_action = "break_shot"
+                scene.target_coords = (int(w * 0.75), int(h * 0.50))
+                scene.shot_power = 1.0
+                scene.threat_urgency = 0.50
 
         self.last_frame_gray = gray
         return scene
@@ -495,23 +632,60 @@ class UniversalVision:
             )
 
         # 8 Ball Pool Laser Aim Guideline Overlay
-        if ("8ball" in profile.id or "pool" in profile.id) and scene.player and scene.targets:
-            cp = scene.player
-            tp = scene.targets[0]
-            # Draw bright laser aim line from cue ball to target pocket
-            cv2.line(annotated, (cp.click_x, cp.click_y), (tp.click_x, tp.click_y), (0, 255, 120), 2, cv2.LINE_AA)
-            # Draw ghost ball indicator circle
-            cv2.circle(annotated, (tp.click_x, tp.click_y), 18, (0, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(
-                annotated,
-                "AIM LINE // POCKET LOCK",
-                (min(cp.click_x, tp.click_x), min(cp.click_y, tp.click_y) - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.42,
-                (0, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
+        if "8ball" in profile.id or "pool" in profile.id:
+            # Draw 6 pockets with cyan rings
+            for px, py in scene.pockets:
+                cv2.circle(annotated, (px, py), 26, (255, 200, 0), 2, cv2.LINE_AA)
+                cv2.circle(annotated, (px, py), 6, (0, 255, 255), -1, cv2.LINE_AA)
+
+            if scene.cue_ball and scene.ghost_ball:
+                cb = scene.cue_ball
+                gb = scene.ghost_ball
+                # 1. Cue to ghost ball laser trajectory
+                cv2.line(annotated, cb, gb, (0, 255, 100), 2, cv2.LINE_AA)
+                # 2. Ghost ball indicator circle (ball diameter = 48)
+                cv2.circle(annotated, gb, 24, (0, 255, 255), 2, cv2.LINE_AA)
+                # 3. Target ball to pocket trajectory
+                if scene.target_pocket and scene.target_ball:
+                    tb = scene.target_ball
+                    tp = scene.target_pocket
+                    cv2.line(annotated, tb, tp, (0, 165, 255), 2, cv2.LINE_AA)
+                    cv2.circle(annotated, tp, 18, (0, 120, 255), -1, cv2.LINE_AA)
+
+                # Overlay status metrics
+                metrics = f"AIM LOCK: {scene.cut_angle_deg}deg CUT | POWER: {int(scene.shot_power * 100)}%"
+                cv2.putText(
+                    annotated,
+                    metrics,
+                    (gb[0] - 60, max(40, gb[1] - 30)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+            elif scene.balls_moving:
+                cv2.putText(
+                    annotated,
+                    "BALLS IN MOTION // OBSERVING TABLE",
+                    (int(annotated.shape[1] * 0.35), int(annotated.shape[0] * 0.50)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 165, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+            elif not scene.cue_ready:
+                cv2.putText(
+                    annotated,
+                    "OPPONENT TURN / AWAITING CUE READY",
+                    (int(annotated.shape[1] * 0.35), int(annotated.shape[0] * 0.50)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (70, 70, 220),
+                    2,
+                    cv2.LINE_AA,
+                )
 
         # Top Banner
         action_text = f"PROFILE: {profile.name} // ACTION: {scene.recommended_action.upper()}"

@@ -1255,9 +1255,36 @@ class GamePilotHUD(ctk.CTk):
 
                 # 3. Action Dispatch
                 now = time.time()
-                cooldown = 0.25 if "solitaire" in self.phone_profile.id else (1.2 if "clash" in self.phone_profile.id else 0.18)
+                if "8ball" in self.phone_profile.id or "pool" in self.phone_profile.id:
+                    cooldown = 7.5  # Realistic billiards turn cooldown; balls roll for 5-10s
+                elif "clash" in self.phone_profile.id:
+                    cooldown = 1.2
+                elif "solitaire" in self.phone_profile.id:
+                    cooldown = 0.25
+                else:
+                    cooldown = 0.18
+
                 if action_name not in ["wait", "maintain_course", "stand_idle"] and (now - last_act_time > cooldown):
                     try:
+                        if "8ball" in self.phone_profile.id or "pool" in self.phone_profile.id:
+                            t_coords = getattr(scene, "target_coords", None) or decision.get("target_coords")
+                            cb = getattr(scene, "cue_ball", None)
+                            power = getattr(scene, "shot_power", 0.65)
+                            if action_name in ["execute_shot", "break_shot", "pot_ball"]:
+                                if t_coords:
+                                    self.phone_adb.execute_8ball_shot(
+                                        t_coords[0],
+                                        t_coords[1],
+                                        power_pct=power,
+                                        cue_x=cb[0] if cb else None,
+                                        cue_y=cb[1] if cb else None,
+                                    )
+                                else:
+                                    self.phone_adb.shoot_8ball_cue(power_pct=power)
+                                self.phone_total_actions += 1
+                                last_act_time = now
+                                continue
+
                         self.phone_adb.dispatch_action(
                             action_name, target_coords=decision.get("target_coords")
                         )

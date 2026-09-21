@@ -202,12 +202,14 @@ class PhoneGamePilot:
                     max_idle = 0.95  # Fast continuous puzzle cadence
                 elif "card" in self.profile.id:
                     max_idle = 3.50  # Card battle turn pacing
+                elif "8ball" in self.profile.id or "pool" in self.profile.id:
+                    max_idle = 9999.0  # Turn-based billiards: NEVER force blind actions on timeout
                 else:
                     max_idle = 1.50  # General default
 
                 phase = getattr(scene, "game_phase", "")
                 if action_name in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > max_idle):
-                    if phase != "matchmaking":
+                    if phase != "matchmaking" and "8ball" not in self.profile.id and "pool" not in self.profile.id:
                         if "clash" in self.profile.id:
                             if phase == "in_battle":
                                 action_name = "deploy_card_right" if (self.total_actions % 2 == 0) else "deploy_card_left"
@@ -253,6 +255,8 @@ class PhoneGamePilot:
                     cooldown = 1.2
                 elif "card" in self.profile.id:
                     cooldown = 0.65
+                elif "8ball" in self.profile.id or "pool" in self.profile.id:
+                    cooldown = 7.5  # Realistic turn cooldown; balls roll for 5-10 seconds
                 elif "solitaire" in self.profile.id:
                     cooldown = 0.25
                 elif "snake" in self.profile.id:
@@ -269,6 +273,31 @@ class PhoneGamePilot:
                 is_cooling_down = (now - self.last_action_time <= cooldown)
                 if action_name not in ["wait", "maintain_course", "stand_idle"] and not is_cooling_down:
                     try:
+                        # Specialized 8 Ball Pool shot handling
+                        if "8ball" in self.profile.id or "pool" in self.profile.id:
+                            t_coords = getattr(scene, "target_coords", None) or decision.get("target_coords")
+                            cb = getattr(scene, "cue_ball", None)
+                            power = getattr(scene, "shot_power", 0.65)
+                            cut = getattr(scene, "cut_angle_deg", 0.0)
+                            if action_name in ["execute_shot", "break_shot", "pot_ball"]:
+                                if t_coords:
+                                    console.print(
+                                        f"[bold cyan]🎱 [8-BALL SHOT LOCK][/bold cyan] Ghost Target: {t_coords} | Cut: {cut}° | Power: {int(power*100)}%"
+                                    )
+                                    self.adb.execute_8ball_shot(
+                                        t_coords[0],
+                                        t_coords[1],
+                                        power_pct=power,
+                                        cue_x=cb[0] if cb else None,
+                                        cue_y=cb[1] if cb else None,
+                                    )
+                                else:
+                                    self.adb.shoot_8ball_cue(power_pct=power)
+                                self.total_actions += 1
+                                self.last_action_time = now
+                                self.last_dispatched_action = action_name
+                                continue
+
                         self.adb.dispatch_action(action_name, target_coords=decision.get("target_coords"))
                         self.total_actions += 1
                         self.last_action_time = now
