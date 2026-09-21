@@ -68,36 +68,46 @@ class UniversalBrain:
         self._start_laya_loader()
 
     def _start_laya_loader(self):
-        """Asynchronously attempts to load local Laya model weights."""
+        """Asynchronously attempts to load local Laya model weights without network downloads."""
         if not _LAYA_AVAILABLE or self.laya_loading or self._laya_tried:
             return
 
         def loader():
             self.laya_loading = True
             self._laya_tried = True
+            # Suppress all HF download progress bars and warnings
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
             os.environ["HF_HUB_DISABLE_XET"] = "1"
             os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
-            # Check for local checkpoints
-            candidates = [
-                ("convaiinnovations/laya", "multilingual"),
-                ("convaiinnovations/laya", None),
-            ]
-            for repo, sub in candidates:
+            # 1. Load directly from local offline cached snapshot
+            local_dir = self._find_local_laya_checkpoint()
+            if local_dir:
                 try:
-                    kwargs = {}
-                    if sub:
-                        kwargs["subfolder"] = sub
-                    agent = laya.load(repo, **kwargs)
+                    agent = laya.load(local_dir)
                     with self._lock:
                         self.laya_agent = agent
-                    print(f"[UniversalBrain] Local Laya model successfully loaded ({repo}, subfolder={sub})")
                     return
-                except Exception as ex:
-                    continue
+                except Exception:
+                    pass
+
             self.laya_loading = False
 
         threading.Thread(target=loader, daemon=True, name="LayaModelLoader").start()
+
+    @staticmethod
+    def _find_local_laya_checkpoint() -> Optional[str]:
+        """Locates the local offline Laya checkpoint in HuggingFace cache."""
+        hf_base = os.path.expanduser(r"~\.cache\huggingface\hub\models--convaiinnovations--laya\snapshots")
+        if os.path.isdir(hf_base):
+            for snap in os.listdir(hf_base):
+                snap_path = os.path.join(hf_base, snap)
+                multi = os.path.join(snap_path, "multilingual")
+                if os.path.exists(os.path.join(multi, "model.safetensors")):
+                    return multi
+                if os.path.exists(os.path.join(snap_path, "model.safetensors")):
+                    return snap_path
+        return None
 
     def _continuous_worker(self):
         """Continuous background worker processing scene evaluations without thread churn."""
@@ -232,13 +242,14 @@ class UniversalBrain:
     def _get_3lane_verbal_status(self, scene: UniversalSceneState) -> str:
         """Determines lane blockage semantics for 3-lane mobile runners."""
         p_x = scene.player.x if scene.player else 200
+        lane_thresh = max(45, int(p_x * 0.25))
         lanes = {"left": "clear", "center": "clear", "right": "clear"}
 
         for t in scene.threats[:3]:
             rel_x = t.x - p_x
-            if rel_x < -40:
+            if rel_x < -lane_thresh:
                 lanes["left"] = "blocked by a barrier"
-            elif rel_x > 40:
+            elif rel_x > lane_thresh:
                 lanes["right"] = "blocked by a barrier"
             else:
                 lanes["center"] = "blocked by a barrier"
@@ -425,22 +436,116 @@ class UniversalBrain:
         - Detects open lane in 3-lane runners.
         - Evaluates Flappy Bird gap height vs bird fall velocity.
         """
-        # 1. Target Clicker
-        if profile.category == "clicker" and scene.best_target:
+        # 1. Target Clicker / Fruit Ninja Slicing
+        if (profile.category == "clicker" or "fruit" in profile.id or "solar" in profile.id) and scene.best_target:
+            action_name = "slice_target" if "fruit" in profile.id else ("fire_laser" if "solar" in profile.id else "click_target")
             return {
-                "action": "click_target",
+                "action": action_name,
                 "threat_score": 0.95,
                 "confidence": 0.99,
                 "latency_ms": 0.2,
-                "source": "aim_lock_reflex",
+                "source": "aim_slice_reflex",
                 "target_coords": (
                     scene.best_target.click_x,
                     scene.best_target.click_y,
                 ),
             }
 
-        # 2. Imminent Hazard Collision (Strike Zone)
-        if scene.threat_urgency >= 0.72 and scene.nearest_threat:
+        # 2. Clash Royale & Tower RTS reflex
+        if profile.id == "mobile_clash_royale":
+            phase = getattr(scene, "game_phase", "")
+            if phase == "matchmaking":
+                return {
+                    "action": "wait",
+                    "threat_score": 0.0,
+                    "confidence": 0.99,
+                    "latency_ms": 0.2,
+                    "source": "matchmaking_standby",
+                    "target_coords": None,
+                }
+            elif phase == "main_menu":
+                return {
+                    "action": "start_battle",
+                    "threat_score": 0.0,
+                    "confidence": 0.99,
+                    "latency_ms": 0.2,
+                    "source": "auto_queue_match",
+                    "target_coords": None,
+                }
+            elif phase == "game_over":
+                return {
+                    "action": "confirm_ok",
+                    "threat_score": 0.0,
+                    "confidence": 0.99,
+                    "latency_ms": 0.2,
+                    "source": "post_game_dismiss",
+                    "target_coords": None,
+                }
+            else:  # in_battle
+                current_elixir = getattr(scene, "elixir", 5)
+                # If elixir is depleted (< 3), hold and charge up
+                if current_elixir < 3:
+                    return {
+                        "action": "wait",
+                        "threat_score": scene.threat_urgency,
+                        "confidence": 0.98,
+                        "latency_ms": 0.2,
+                        "source": "elixir_recharge_standby",
+                        "target_coords": None,
+                    }
+
+                # If nearest threat is invading our territory, defend that lane!
+                if scene.nearest_threat and scene.threat_urgency > 0.40:
+                    invader_x = scene.nearest_threat.click_x
+                    act = "deploy_card_left" if invader_x < 540 else "deploy_card_right"
+                    return {
+                        "action": act,
+                        "threat_score": scene.threat_urgency,
+                        "confidence": 0.96,
+                        "latency_ms": 0.3,
+                        "source": "rts_defense_reflex",
+                        "target_coords": None,
+                    }
+                # Attack push: rotate continuous pressure between left bridge, right bridge, and spell strikes
+                self._clash_push_step = getattr(self, "_clash_push_step", 0) + 1
+                if self._clash_push_step % 3 == 0:
+                    push_act = "deploy_spell_center"
+                elif self._clash_push_step % 2 == 0:
+                    push_act = "deploy_card_left"
+                else:
+                    push_act = "deploy_card_right"
+
+                return {
+                    "action": push_act,
+                    "threat_score": 0.50,
+                    "confidence": 0.92,
+                    "latency_ms": 0.3,
+                    "source": "rts_offensive_push",
+                    "target_coords": None,
+                }
+
+        # 3. Earn to Die 2 / 2D Vehicle Driver
+        if profile.id == "mobile_earntodie2":
+            if len(scene.threats) >= 2 or scene.threat_urgency > 0.85:
+                return {
+                    "action": "boost",
+                    "threat_score": scene.threat_urgency,
+                    "confidence": 0.95,
+                    "latency_ms": 0.2,
+                    "source": "vehicle_nitro_reflex",
+                    "target_coords": None,
+                }
+            return {
+                "action": "accelerate",
+                "threat_score": scene.threat_urgency,
+                "confidence": 0.90,
+                "latency_ms": 0.2,
+                "source": "vehicle_throttle_reflex",
+                "target_coords": None,
+            }
+
+        # 4. Imminent Hazard Collision (Strike Zone) for Runners & Platformers
+        if scene.threat_urgency >= 0.70 and scene.nearest_threat:
             t = scene.nearest_threat
             p_bottom = (scene.player.y + scene.player.h) if scene.player else 300
             p_top = scene.player.y if scene.player else 240
@@ -465,14 +570,16 @@ class UniversalBrain:
                 None,
             )
 
-            # 3-Lane Runner: pick clear lane
-            if profile.id == "runner_3lane" or len(profile.actions) >= 4:
+            # 3-Lane Runner & Universal Mobile Runner: pick clear lane
+            if profile.id in ["runner_3lane", "mobile_universal"] or len(profile.actions) >= 4:
                 p_x = scene.player.x if scene.player else 200
+                lane_thresh = max(45, int(p_x * 0.25))
+                danger_dist = max(180, int((scene.player.h if scene.player else 60) * 3.5))
                 rel_x = t.x - p_x
-                if abs(rel_x) < 45:
+                if abs(rel_x) < lane_thresh:
                     # In front of obstacle: evade to whichever side is open
-                    has_left_obstacle = any(o.x - p_x < -40 and o.distance_to_player < 180 for o in scene.threats)
-                    has_right_obstacle = any(o.x - p_x > 40 and o.distance_to_player < 180 for o in scene.threats)
+                    has_left_obstacle = any(o.x - p_x < -lane_thresh and o.distance_to_player < danger_dist for o in scene.threats)
+                    has_right_obstacle = any(o.x - p_x > lane_thresh and o.distance_to_player < danger_dist for o in scene.threats)
                     if not has_left_obstacle and left_action:
                         chosen = left_action
                     elif not has_right_obstacle and right_action:

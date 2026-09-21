@@ -39,6 +39,8 @@ class UniversalSceneState:
     recommended_action: str = "wait"
     is_game_over: bool = False
     game_speed: float = 0.0
+    game_phase: str = "active"  # "main_menu", "in_battle", "game_over", "active"
+    elixir: int = 5
 
 
 class UniversalVision:
@@ -69,13 +71,30 @@ class UniversalVision:
         self.last_time = now
 
         h, w, _ = frame_bgr.shape
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        is_portrait = h > w
         scene = UniversalSceneState()
 
-        # 1. Track Player Avatar
-        player_box = self._find_player(gray, w, h)
+        # Compute optimal downscale factor for sub-4ms analysis (target max dim ~640)
+        max_dim = max(w, h)
+        scale = min(1.0, 640.0 / max(1, max_dim))
+        inv_scale = 1.0 / scale if scale > 0 else 1.0
+
+        if scale < 0.98:
+            small_bgr = cv2.resize(frame_bgr, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        else:
+            small_bgr = frame_bgr
+        sw, sh = small_bgr.shape[1], small_bgr.shape[0]
+        gray = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2GRAY)
+
+        # 1. Track Player Avatar (in scaled space)
+        player_box = self._find_player(gray, sw, sh, is_portrait, profile)
         if player_box:
-            px, py, pw, ph = player_box
+            spx, spy, spw, sph = player_box
+            px = int(spx * inv_scale)
+            py = int(spy * inv_scale)
+            pw = int(spw * inv_scale)
+            ph = int(sph * inv_scale)
+
             vx, vy = 0.0, 0.0
             if self.last_player_pos:
                 vx = (px - self.last_player_pos[0]) / dt
@@ -95,25 +114,34 @@ class UniversalVision:
                 click_y=py + ph // 2,
             )
         else:
-            # Fallback player location (left-center for runners, center for others)
-            px = int(w * 0.15) if profile.category == "runner" else int(w * 0.45)
-            py = int(h * 0.55)
+            # Fallback player location:
+            # Portrait mobile runner: bottom-center (Subway Surfers, Temple Run)
+            # Landscape runner: left-center (Dino, Earn to Die, Flappy)
+            if is_portrait:
+                px = int(w * 0.50) - 40
+                py = int(h * 0.72)
+            elif profile.category == "runner":
+                px = int(w * 0.18)
+                py = int(h * 0.55)
+            else:
+                px = int(w * 0.50) - 30
+                py = int(h * 0.50) - 30
+
             scene.player = UniversalEntity(
                 x=px,
                 y=py,
-                w=40,
-                h=40,
+                w=60,
+                h=60,
                 entity_type="player",
-                confidence=0.4,
-                click_x=px + 20,
-                click_y=py + 20,
+                confidence=0.5,
+                click_x=px + 30,
+                click_y=py + 30,
             )
 
         p_center_x = scene.player.x + scene.player.w // 2
         p_center_y = scene.player.y + scene.player.h // 2
 
-        # 2. Contour / Entity Detection
-        # Adaptive edge & difference detection
+        # 2. Contour / Entity Detection on scaled frame
         edges = cv2.Canny(gray, 40, 130)
         cnts, _ = cv2.findContours(
             edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -123,12 +151,19 @@ class UniversalVision:
         all_targets: List[UniversalEntity] = []
 
         for c in cnts:
-            bx, by, bw, bh = cv2.boundingRect(c)
-            area = bw * bh
+            sbx, sby, sbw, sbh = cv2.boundingRect(c)
+            s_area = sbw * sbh
 
             # Filter out tiny noise and gigantic outer frame borders
-            if area < 80 or (bw > w * 0.9 and bh > h * 0.9):
+            if s_area < 45 or (sbw > sw * 0.92 and sbh > sh * 0.92):
                 continue
+
+            # Project back to physical screen space
+            bx = int(sbx * inv_scale)
+            by = int(sby * inv_scale)
+            bw = int(sbw * inv_scale)
+            bh = int(sbh * inv_scale)
+            area = bw * bh
 
             # Ignore player's own bounding box
             if scene.player:
@@ -142,7 +177,7 @@ class UniversalVision:
                     min(by + bh, scene.player.y + scene.player.h)
                     - max(by, scene.player.y),
                 )
-                if overlap_x * overlap_y > 0.4 * area:
+                if overlap_x * overlap_y > 0.35 * area:
                     continue
 
             center_x = bx + bw // 2
@@ -160,35 +195,41 @@ class UniversalVision:
             )
 
             # Categorize based on game profile
-            if profile.category == "clicker":
-                # Targets in clicker games: compact shapes
-                if 15 <= bw <= 120 and 15 <= bh <= 120:
+            if profile.category == "clicker" or "fruit" in profile.id or "solar" in profile.id:
+                # Targets: compact flying or floating shapes
+                if 25 <= bw <= int(w * 0.35) and 25 <= bh <= int(h * 0.35):
                     entity.entity_type = "target"
                     all_targets.append(entity)
+            elif is_portrait and (profile.category == "runner" or profile.id == "runner_3lane" or profile.id == "mobile_universal"):
+                # Portrait runner: obstacles are in front of player (vertically above player in screen space)
+                if center_y < scene.player.y + 60:
+                    entity.entity_type = "threat"
+                    all_threats.append(entity)
             else:
-                # Platformer / Runner / Arcade: obstacles in path
+                # Landscape runner / platformer: obstacles are horizontally ahead of player
                 if profile.scan_direction == "right":
-                    # Threats ahead of player horizontally
-                    if bx > scene.player.x:
+                    if center_x > scene.player.x:
                         entity.entity_type = "threat"
                         all_threats.append(entity)
                 else:
                     entity.entity_type = "threat"
                     all_threats.append(entity)
 
-        # 3. Threat Assessment & Targeting
+        # 3. Threat Assessment & Targeting (Proportional to screen dimension)
+        if is_portrait:
+            critical_dist = max(250.0, h * 0.28)
+        else:
+            critical_dist = max(200.0, w * 0.28)
+
         if all_threats:
             all_threats.sort(key=lambda t: t.distance_to_player)
             scene.threats = all_threats
             nearest = all_threats[0]
             scene.nearest_threat = nearest
 
-            # Threat urgency calculation (closer distance = higher urgency)
-            critical_dist = (
-                140.0 if profile.category == "runner" else 100.0
-            )
+            # Threat urgency: 1.0 when touching critical perimeter, decaying to 0.0 at horizon
             scene.threat_urgency = max(
-                0.0, min(1.0, 1.0 - (nearest.distance_to_player / (critical_dist * 2.2)))
+                0.0, min(1.0, 1.0 - (nearest.distance_to_player / (critical_dist * 1.8)))
             )
 
         if all_targets:
@@ -196,11 +237,83 @@ class UniversalVision:
             scene.targets = all_targets
             scene.best_target = all_targets[0]
 
+        # 4. Mobile Game Phase Classification (Auto Start & Post-Game Dismissal)
+        if profile.id == "mobile_clash_royale":
+            btn_region = frame_bgr[int(h * 0.78) : int(h * 0.86), int(w * 0.35) : int(w * 0.65)]
+            yellow_pixels = (btn_region[:, :, 2] > 200) & (btn_region[:, :, 1] > 160) & (btn_region[:, :, 0] < 120)
+            red_cancel = (btn_region[:, :, 2] > 170) & (btn_region[:, :, 1] < 100) & (btn_region[:, :, 0] < 100)
+
+            # Check elixir bar in bottom HUD (active in battle)
+            elixir_region = frame_bgr[int(h * 0.96) : int(h * 0.99), int(w * 0.18) : int(w * 0.95)]
+            magenta = (elixir_region[:, :, 2] > 160) & (elixir_region[:, :, 0] > 160) & (elixir_region[:, :, 1] < 120)
+
+            if red_cancel.sum() > 1000:
+                scene.game_phase = "matchmaking"
+            elif yellow_pixels.sum() > 4000:
+                scene.game_phase = "main_menu"
+            elif magenta.sum() > 800:
+                scene.game_phase = "in_battle"
+                # Exact elixir calculation: measure magenta bar pixel width
+                cols = np.where(magenta.sum(axis=0) > 2)[0]
+                if len(cols) > 0:
+                    filled_w = len(cols)
+                    scene.elixir = max(0, min(10, int((filled_w - 65) / 73.0 + 0.5)))
+                else:
+                    scene.elixir = 2
+            else:
+                ok_region = frame_bgr[int(h * 0.80) : int(h * 0.90), int(w * 0.35) : int(w * 0.65)]
+                blue_pixels = (ok_region[:, :, 0] > 180) & (ok_region[:, :, 2] < 100)
+                if blue_pixels.sum() > 800:
+                    scene.game_phase = "game_over"
+                else:
+                    # Generic modal or reward screen
+                    scene.game_phase = "active"
+
+            # Specialized Clash Royale RTS Perception (Enemy Unit Health Bar Detection)
+            if scene.game_phase == "in_battle":
+                friendly_y1 = int(h * 0.45)
+                friendly_y2 = int(h * 0.77)
+                friendly_zone = frame_bgr[friendly_y1:friendly_y2, :]
+
+                # Enemy units carry crimson red health bars in our territory
+                enemy_red_mask = (friendly_zone[:, :, 2] > 180) & (friendly_zone[:, :, 1] < 75) & (friendly_zone[:, :, 0] < 75)
+                if enemy_red_mask.sum() > 35:
+                    ry, rx = np.where(enemy_red_mask)
+                    invader_x = int(np.median(rx))
+                    invader_y = int(np.median(ry)) + friendly_y1
+                    real_threat = UniversalEntity(
+                        x=invader_x - 30,
+                        y=invader_y - 20,
+                        w=60,
+                        h=40,
+                        entity_type="threat",
+                        confidence=0.96,
+                        distance_to_player=math.hypot(invader_x - 540, invader_y - 1720),
+                        click_x=invader_x,
+                        click_y=invader_y,
+                    )
+                    scene.threats = [real_threat]
+                    scene.nearest_threat = real_threat
+                    scene.threat_urgency = 0.85
+                else:
+                    scene.threats = []
+                    scene.nearest_threat = None
+                    scene.threat_urgency = 0.0
+            else:
+                scene.threats = []
+                scene.nearest_threat = None
+                scene.threat_urgency = 0.0
+
         self.last_frame_gray = gray
         return scene
 
     def _find_player(
-        self, gray_frame: np.ndarray, w: int, h: int
+        self,
+        gray_frame: np.ndarray,
+        w: int,
+        h: int,
+        is_portrait: bool = False,
+        profile: Optional[GameProfile] = None,
     ) -> Optional[Tuple[int, int, int, int]]:
         """Finds player position using template matching or focal contour."""
         # 1. Template matching if calibrated
@@ -213,9 +326,19 @@ class UniversalVision:
                 tw, th = self.player_template_size
                 return (max_loc[0], max_loc[1], tw, th)
 
-        # 2. Heuristic fallback: player is in left-third for runners
-        left_zone = gray_frame[int(h * 0.3) : int(h * 0.85), int(w * 0.05) : int(w * 0.35)]
-        edges = cv2.Canny(left_zone, 50, 150)
+        # 2. Heuristic fallback based on orientation
+        if is_portrait:
+            # Mobile portrait runner: player is in bottom-center zone
+            search_zone = gray_frame[int(h * 0.58) : int(h * 0.88), int(w * 0.25) : int(w * 0.75)]
+            offset_x = int(w * 0.25)
+            offset_y = int(h * 0.58)
+        else:
+            # Landscape runner / platformer: player is in left-third zone
+            search_zone = gray_frame[int(h * 0.30) : int(h * 0.85), int(w * 0.05) : int(w * 0.35)]
+            offset_x = int(w * 0.05)
+            offset_y = int(h * 0.30)
+
+        edges = cv2.Canny(search_zone, 50, 150)
         cnts, _ = cv2.findContours(
             edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -223,8 +346,8 @@ class UniversalVision:
         for c in cnts:
             bx, by, bw, bh = cv2.boundingRect(c)
             area = bw * bh
-            if 300 <= area <= 6000 and bh >= 20:
-                candidates.append((area, (int(w * 0.05) + bx, int(h * 0.3) + by, bw, bh)))
+            if 80 <= area <= 1500 and bh >= 12:
+                candidates.append((area, (offset_x + bx, offset_y + by, bw, bh)))
 
         if candidates:
             candidates.sort(key=lambda item: item[0], reverse=True)
