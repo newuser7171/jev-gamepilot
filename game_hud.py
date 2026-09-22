@@ -1022,7 +1022,11 @@ class GamePilotHUD(ctk.CTk):
                 or p.id in ["runner_3lane", "mobile_8ball_pool"]
             ):
                 if not q or q in p.name.lower() or q in p.id.lower() or q in (p.description or "").lower():
-                    items.append(f"{p.icon or '📱'} {p.name} ({p.id})")
+                    icon = getattr(p, "icon", "")
+                    if icon and not p.name.startswith(icon):
+                        items.append(f"{icon} {p.name} ({p.id})")
+                    else:
+                        items.append(f"{p.name} ({p.id})")
         if not items:
             items = ["📱 Universal Android AI (mobile_universal)"]
         return items

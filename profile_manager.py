@@ -29,6 +29,7 @@ class GameProfile:
     scan_direction: str = "right"  # "right", "left", "omnidirectional", "click_targets"
     auto_restart_key: str = "space"
     is_builtin: bool = False
+    icon: str = ""
 
 
 DEFAULT_PROFILES: List[GameProfile] = [
