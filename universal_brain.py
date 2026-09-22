@@ -3,7 +3,7 @@ Universal Jev / Laya System One Brain for Jev-GamePilot.
 Combines:
 1. High-speed local Laya decision engine (convaiinnovations/laya) for sub-30ms offline inference.
 2. TypeSafe Jev System One SDK cloud API (jev-latest) as robust online fallback.
-3. Keyless classifier.dev fallback for zero-config environments.
+3. Keyless classifier.dev fallback for zero-config environments (circuit-broken on hard HTTP failures).
 4. Intelligent spatial & aerodynamic reflex actuator (no blind defaults; altitude & lane aware).
 5. Continuous async worker for 60+ FPS lock-free gameplay.
 """
@@ -14,6 +14,7 @@ import os
 import queue
 import threading
 import time
+import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -83,6 +84,7 @@ class UniversalBrain:
 
         self._lock = threading.Lock()
         self._work_queue: queue.Queue = queue.Queue(maxsize=2)
+        self._classifier_dead = False
         self._worker_thread = threading.Thread(
             target=self._continuous_worker, daemon=True, name="UniversalBrainWorker"
         )
@@ -178,11 +180,12 @@ class UniversalBrain:
                 self.last_decision = laya_res
             return
 
-        # Secondary opinion / Escalation: Query Jev System One (Cloud SDK or keyless classifier.dev)
+        # Secondary opinion / Escalation: Query Jev System One (Cloud SDK).
+        # classifier.dev is dead (persistent HTTP 403) — circuit-broken, not retried.
         jev_res = None
         if self.client is not None and os.getenv("TYPESAFE_API_KEY"):
             jev_res = self._query_typesafe_sdk(profile, scene)
-        if not jev_res:
+        if not jev_res and not self._classifier_dead:
             jev_res = self._query_classifier_dev(profile, scene)
 
         # Consensus Fusion: Merge Laya + Jev decisions
@@ -234,7 +237,7 @@ class UniversalBrain:
         jev_res = None
         if self.client is not None and os.getenv("TYPESAFE_API_KEY"):
             jev_res = self._query_typesafe_sdk(profile, scene)
-        if not jev_res:
+        if not jev_res and not self._classifier_dead:
             jev_res = self._query_classifier_dev(profile, scene)
 
         if laya_res and jev_res:
@@ -278,25 +281,6 @@ class UniversalBrain:
             from profile_manager import ProfileManager
             profile = ProfileManager().get_profile("mobile_universal")
         return self.get_action(profile, scene)
-
-    def get_action(
-        self, profile: GameProfile, scene: UniversalSceneState
-    ) -> Dict[str, Any]:
-        """Evaluates scene telemetry and returns an actionable decision dictionary."""
-        res = self.query_jev_universal(profile, scene)
-        if not res:
-            res = {
-                "action": getattr(scene, "recommended_action", "wait") or "wait",
-                "threat_score": getattr(scene, "threat_urgency", 0.0),
-                "confidence": 0.88,
-                "latency_ms": 1.0,
-                "source": "heuristic_reflex",
-                "target_coords": getattr(scene, "target_coords", None),
-            }
-        # Ensure target_coords are preserved if available on scene
-        if not res.get("target_coords") and getattr(scene, "target_coords", None):
-            res["target_coords"] = scene.target_coords
-        return res
 
     def _build_verbal_state(
         self, profile: GameProfile, scene: UniversalSceneState
@@ -511,7 +495,9 @@ class UniversalBrain:
     def _query_classifier_dev(
         self, profile: GameProfile, scene: UniversalSceneState
     ) -> Optional[Dict[str, Any]]:
-        """Keyless fallback directly using classifier.dev."""
+        """Keyless fallback directly using classifier.dev (circuit-broken after hard fail)."""
+        if self._classifier_dead:
+            return None
         t0 = time.perf_counter()
         try:
             labels = [action.name for action in profile.actions]
@@ -556,6 +542,10 @@ class UniversalBrain:
                 "source": "jev_classifier_dev",
                 "target_coords": target_coords,
             }
+        except urllib.error.HTTPError as e:
+            if getattr(e, "code", None) in (403, 404, 429, 500, 502, 503):
+                self._classifier_dead = True
+            return None
         except Exception:
             return None
 
@@ -963,7 +953,18 @@ class UniversalBrain:
 
             # Standard 2D Runner / Platformer (Dino, Retro Platformer):
             # Mid-height hazard (bird/overhead beam) -> Duck!
-            if t_center_y <= p_top + 25 and t_bottom > p_top - 20 and duck_action:
+            # Only when the threat is actually in the player's horizontal path
+            # (prevents side-scroll false positives from stealing the lane decision).
+            p_x = scene.player.x if scene.player else 0
+            p_w = scene.player.w if scene.player else 40
+            rel_x = t.x - p_x
+            in_player_path = abs(rel_x) <= max(p_w + 24, 64)
+            if (
+                in_player_path
+                and t_center_y <= p_top + 25
+                and t_bottom > p_top - 20
+                and duck_action
+            ):
                 return {
                     "action": duck_action,
                     "threat_score": scene.threat_urgency,
@@ -974,7 +975,8 @@ class UniversalBrain:
                 }
 
             # Ground level hazard (cactus/pit/hurdle) -> Jump!
-            if jump_action:
+            # Same path gate as duck so off-screen noise never triggers a jump.
+            if in_player_path and jump_action:
                 return {
                     "action": jump_action,
                     "threat_score": scene.threat_urgency,
@@ -986,18 +988,102 @@ class UniversalBrain:
 
         return None
 
+    @staticmethod
+    def coerce_action_name(
+        profile: GameProfile,
+        action_name: str,
+        scene: Optional[UniversalSceneState] = None,
+    ) -> str:
+        """Map any brain output onto a name the profile/dispatcher actually understands."""
+        name = (action_name or "").strip()
+        if not name:
+            return "wait"
+        idle = {"wait", "maintain_course", "stand_idle"}
+        if name in idle:
+            return name
+        valid = {a.name for a in profile.actions}
+        if name in valid:
+            return name
+        lowered = name.lower()
+        for a in profile.actions:
+            al = a.name.lower()
+            if al == lowered or al in lowered or lowered in al:
+                return a.name
+        if scene is not None:
+            rec = (getattr(scene, "recommended_action", "") or "").strip()
+            if rec in valid or rec in idle:
+                return rec
+        return "wait"
+
+    def _local_scene_decision(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Dict[str, Any]:
+        """Sub-ms local answer when cloud cache is stale — never leave the loop on wait/init."""
+        rec = (getattr(scene, "recommended_action", "") or "").strip() or "wait"
+        urgency = float(getattr(scene, "threat_urgency", 0.0) or 0.0)
+
+        action = self.coerce_action_name(profile, rec, scene)
+        if action in {"wait", "maintain_course", "stand_idle"} and urgency >= 0.5:
+            # Vision left recommended_action idle but threat is real — derive from geometry.
+            if scene.nearest_threat and scene.player:
+                t = scene.nearest_threat
+                lane_actions = {a.name: a for a in profile.actions}
+                left = next((n for n in lane_actions if "left" in n), None)
+                right = next((n for n in lane_actions if "right" in n), None)
+                duck = next(
+                    (n for n in lane_actions if "duck" in n or "slide" in n),
+                    None,
+                )
+                jump = next((n for n in lane_actions if "jump" in n), None)
+                rel_x = t.x - scene.player.x
+                if abs(rel_x) < max(45, int(scene.player.x * 0.25)) and duck:
+                    action = duck
+                elif rel_x < 0 and right:
+                    action = right
+                elif rel_x > 0 and left:
+                    action = left
+                elif jump:
+                    action = jump
+                else:
+                    action = "maintain_course" if "maintain_course" in {a.name for a in profile.actions} else "wait"
+            else:
+                action = "maintain_course" if "maintain_course" in {a.name for a in profile.actions} else "wait"
+
+        target_coords = None
+        if scene.best_target:
+            target_coords = (scene.best_target.click_x, scene.best_target.click_y)
+        elif getattr(scene, "target_coords", None):
+            target_coords = scene.target_coords
+
+        return {
+            "action": action,
+            "threat_score": urgency,
+            "confidence": 0.72 if action not in {"wait", "maintain_course", "stand_idle"} else 0.9,
+            "latency_ms": 0.2,
+            "source": "local_scene_heuristic",
+            "target_coords": target_coords,
+        }
+
     def get_action(
         self, profile: GameProfile, scene: UniversalSceneState
     ) -> Dict[str, Any]:
         """
         Hybrid decision pipeline:
-        1. Evaluates smart physical/spatial reflex when obstacle is in strike zone.
-        2. Queues asynchronous semantic evaluation when threat appears on horizon.
-        3. Returns cached high-confidence decision with sub-millisecond response.
+        1. Instant spatial reflex when hazard is in strike zone / path.
+        2. Async cloud refresh queued when threat or targets appear.
+        3. Fresh local scene heuristic when cache is stale (init/idle) —
+           never block the 60 FPS loop on a 800ms cloud round-trip.
+        4. Otherwise reuse the latest high-confidence cloud decision.
         """
-        # 1. Smart Physical Reflex (instant 0.3ms execution)
+        # 1. Smart Physical Reflex (instant sub-ms execution)
         reflex_decision = self._evaluate_intelligent_reflex(profile, scene)
         if reflex_decision is not None:
+            coerced = self.coerce_action_name(profile, reflex_decision.get("action", "wait"), scene)
+            if coerced != reflex_decision.get("action"):
+                reflex_decision = dict(reflex_decision)
+                reflex_decision["action"] = coerced
+            with self._lock:
+                self.last_decision = reflex_decision
             return reflex_decision
 
         # 2. Queue asynchronous brain evaluation when threats or targets are detected
@@ -1007,6 +1093,42 @@ class UniversalBrain:
             except queue.Full:
                 pass
 
-        # 3. Return latest situational awareness decision
         with self._lock:
-            return self.last_decision
+            cached = dict(self.last_decision)
+
+        # 3. Stale cache (init / pure idle) + live scene signal → answer locally now
+        cache_source = cached.get("source", "init")
+        cache_action = cached.get("action", "wait")
+        cache_is_stale = cache_source in (None, "init") or cache_action in {
+            "wait",
+            "maintain_course",
+            "stand_idle",
+        }
+        scene_rec = (getattr(scene, "recommended_action", "") or "").strip()
+        scene_has_signal = (
+            scene.threat_urgency > 0.12
+            or bool(scene.targets)
+            or scene_rec not in {"", "wait", "maintain_course", "stand_idle"}
+        )
+        if cache_is_stale and scene_has_signal:
+            local = self._local_scene_decision(profile, scene)
+            with self._lock:
+                # Don't clobber a fresher decision the worker may have just written
+                if self.last_decision.get("source", "init") in (None, "init"):
+                    self.last_decision = local
+            return local
+
+        # 4. Reuse recent cloud decision unless it's blind to an urgent threat
+        if (
+            cached.get("confidence", 0.0) >= 0.5
+            and not (
+                scene.threat_urgency >= 0.7
+                and float(cached.get("threat_score", 0.0) or 0.0) < 0.3
+            )
+        ):
+            if not cached.get("target_coords") and scene.best_target:
+                cached["target_coords"] = (scene.best_target.click_x, scene.best_target.click_y)
+            return cached
+
+        # 5. Final fallback: local heuristic (never raw wait/init)
+        return self._local_scene_decision(profile, scene)

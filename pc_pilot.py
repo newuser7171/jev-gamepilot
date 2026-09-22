@@ -224,7 +224,12 @@ class PcGamePilot:
 
             # 3. Dual-Tier Consensus Brain (Laya + Jev)
             decision = self.brain.get_action(self.profile, scene)
-            action_name = decision.get("action", "wait")
+            action_name = self.brain.coerce_action_name(
+                self.profile, decision.get("action", "wait"), scene
+            )
+            if action_name != decision.get("action"):
+                decision = dict(decision)
+                decision["action"] = action_name
             target_coords = decision.get("target_coords")
 
             # 4. Action Cooldown & Physical Dispatch

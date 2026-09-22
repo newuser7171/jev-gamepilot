@@ -173,7 +173,12 @@ class PhoneGamePilot:
 
                 # 3. Decision (Laya / Jev System One)
                 decision = self.brain.get_action(self.profile, scene)
-                action_name = decision.get("action", "wait")
+                action_name = self.brain.coerce_action_name(
+                    self.profile, decision.get("action", "wait"), scene
+                )
+                if action_name != decision.get("action"):
+                    decision = dict(decision)
+                    decision["action"] = action_name
 
                 # 4. Dispatch Physical Android Gesture
                 now = time.time()
@@ -210,7 +215,15 @@ class PhoneGamePilot:
                 phase = getattr(scene, "game_phase", "")
                 if action_name in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > max_idle):
                     if phase != "matchmaking" and "8ball" not in self.profile.id and "pool" not in self.profile.id:
-                        if "clash" in self.profile.id:
+                        # Prefer vision's recommendation over blind genre rotation.
+                        scene_pick = (getattr(scene, "recommended_action", "") or "").strip()
+                        valid_names = {a.name for a in self.profile.actions}
+                        if scene_pick and scene_pick not in {"wait", "maintain_course", "stand_idle"} and (
+                            scene_pick in valid_names
+                            or any(scene_pick in a.name or a.name in scene_pick for a in self.profile.actions)
+                        ):
+                            action_name = scene_pick
+                        elif "clash" in self.profile.id:
                             if phase == "in_battle":
                                 action_name = "deploy_card_right" if (self.total_actions % 2 == 0) else "deploy_card_left"
                             elif phase == "main_menu":
@@ -243,7 +256,9 @@ class PhoneGamePilot:
                             card_rot = ["play_card_center", "play_card_left", "play_card_right", "attack_face", "end_turn"]
                             action_name = card_rot[self.total_actions % len(card_rot)]
                         elif "runner" in self.profile.id or self.profile.category == "runner":
-                            action_name = "slide" if (self.total_actions % 2 == 0) else "jump"
+                            # No blind slide/jump rotation — leave idle; threat path
+                            # is handled by get_action / lane_evasion_reflex.
+                            pass
                         elif "solar" in self.profile.id:
                             action_name = "fire_laser" if (self.total_actions % 2 == 0) else "orbital_strike"
                         elif "bitlife" in self.profile.id:
