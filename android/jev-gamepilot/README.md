@@ -12,7 +12,8 @@ game profiles, and ADB controller are not in this APK.
 2. Open the app and enter your TypeSafe API key if you want Jev decisions.
    The key stays in memory for the session, is sent only to `api.typesafe.ai`,
    and is not saved in preferences. Without a key, the local reflex still runs.
-3. Tap **Start pilot with Jev**, grant screen capture, and choose **Entire screen**.
+3. Tap **Test Jev key** to check the connection, then tap **Start pilot with Jev**,
+   grant screen capture, and choose **Entire screen**.
 4. Open `chrome://dino` in Chrome and start the game. The pilot finds the ground
    line, measures near/ahead foreground clusters, and taps only while Chrome is
    in the foreground. The Android notification shows diagnostics and Jev status.

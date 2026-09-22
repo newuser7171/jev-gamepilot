@@ -5,6 +5,8 @@ import android.content.Intent;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.widget.Button;
@@ -41,6 +43,22 @@ public class MainActivity extends Activity {
         TextView privacy = new TextView(this);
         privacy.setText("The key is used for this session only. Jev receives obstacle measurements, not screenshots.");
         layout.addView(privacy);
+        Button testKey = new Button(this);
+        testKey.setText("Test Jev key");
+        testKey.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            final String key = apiKey.getText().toString().trim();
+            if (key.isEmpty()) { status.setText("Enter a TypeSafe API key to test Jev."); return; }
+            status.setText("Contacting Jev...");
+            new Thread(new Runnable() { @Override public void run() {
+                final JevClient.Decision answer = new JevClient(key).decide(
+                        new DinoDetector.Observation(100, 100, 0, 0, 0, false));
+                runOnUiThread(new Runnable() { @Override public void run() {
+                    status.setText(answer.status + (answer.status.startsWith("Jev:")
+                            ? " · connection works" : " · check the key or network"));
+                }});
+            }}, "JevConnectionTest").start();
+        }});
+        layout.addView(testKey);
         Button access = new Button(this);
         access.setText("1. Enable touch control");
         access.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
@@ -69,6 +87,10 @@ public class MainActivity extends Activity {
         help.setText("Choose Entire screen when Android asks what to capture. Open chrome://dino in Chrome and start the game. The notification shows ground detection, jump count, and Jev status. Stop there or with this button.");
         layout.addView(help);
         setContentView(layout);
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 22);
+        }
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
