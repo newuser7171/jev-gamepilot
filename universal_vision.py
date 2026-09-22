@@ -259,11 +259,21 @@ class UniversalVision:
             elixir_region = frame_bgr[int(h * 0.95) : int(h * 0.995), int(w * 0.15) : int(w * 0.98)]
             magenta = (elixir_region[:, :, 2] > 160) & (elixir_region[:, :, 0] > 160) & (elixir_region[:, :, 1] < 120)
 
+            # Four-card hand at the bottom is a stronger in-battle signal than the
+            # yellow-button heuristic, which false-fires on gold arena/card art.
+            hand_y1, hand_y2 = int(h * 0.87), int(h * 0.99)
+            hand_region = frame_bgr[hand_y1:hand_y2, int(w * 0.15) : int(w * 0.92)]
+            hand_gray = cv2.cvtColor(hand_region, cv2.COLOR_BGR2GRAY)
+            hand_edges = cv2.Canny(hand_gray, 60, 160)
+            card_hand_present = (
+                hand_region.size > 0
+                and float(hand_edges.mean()) > 8.0
+                and hand_region.shape[1] > 200
+            )
+
             if red_cancel.sum() > 800:
                 scene.game_phase = "matchmaking"
-            elif yellow_pixels.sum() > 2500:
-                scene.game_phase = "main_menu"
-            elif magenta.sum() > 250:
+            elif magenta.sum() > 250 or card_hand_present:
                 scene.game_phase = "in_battle"
                 # Exact elixir calculation: measure magenta bar pixel width
                 cols = np.where(magenta.sum(axis=0) > 2)[0]
@@ -272,14 +282,22 @@ class UniversalVision:
                     scene.elixir = max(1, min(10, int((filled_w - 55) / 73.0 + 0.5)))
                 else:
                     scene.elixir = 4  # Default to playable elixir so it never starves
+                if not scene.recommended_action or scene.recommended_action == "wait":
+                    scene.recommended_action = "deploy_card_left"
+            elif yellow_pixels.sum() > 2500:
+                scene.game_phase = "main_menu"
+                scene.recommended_action = "start_battle"
             else:
                 ok_region = frame_bgr[int(h * 0.80) : int(h * 0.90), int(w * 0.35) : int(w * 0.65)]
                 blue_pixels = (ok_region[:, :, 0] > 180) & (ok_region[:, :, 2] < 100)
                 if blue_pixels.sum() > 800:
                     scene.game_phase = "game_over"
+                    scene.recommended_action = "confirm_ok"
                 else:
-                    # Generic modal or reward screen
-                    scene.game_phase = "active"
+                    # Generic modal or reward screen — still play it like a battle
+                    # so the clash idle path never dead-ends on "active".
+                    scene.game_phase = "in_battle"
+                    scene.recommended_action = "deploy_card_left"
 
             # Specialized Clash Royale RTS Perception (Enemy Unit Health Bar Detection)
             if scene.game_phase == "in_battle":

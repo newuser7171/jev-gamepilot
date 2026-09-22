@@ -366,6 +366,18 @@ DEFAULT_PROFILES: List[GameProfile] = [
                 is_mouse_click=True,
             ),
             GameAction(
+                name="start_battle",
+                key="mouse_left",
+                description="Tap the yellow Battle button on the main menu to queue a match",
+                is_mouse_click=True,
+            ),
+            GameAction(
+                name="confirm_ok",
+                key="mouse_left",
+                description="Tap OK / center to dismiss post-game screens and collect rewards",
+                is_mouse_click=True,
+            ),
+            GameAction(
                 name="wait",
                 key="none",
                 description="Preserve and generate elixir for high-cost counter-push",

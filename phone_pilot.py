@@ -16,9 +16,9 @@ import numpy as np
 from rich.console import Console
 from rich.panel import Panel
 
-# Ensure Windows cp1252 handles Unicode cleanly
+# Ensure Windows cp1252 handles Unicode cleanly + line-buffered pipe logs
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 from adapters.phone_adapter import AdbController
 from profile_manager import ProfileManager, GameProfile
@@ -224,7 +224,7 @@ class PhoneGamePilot:
                         ):
                             action_name = scene_pick
                         elif "clash" in self.profile.id:
-                            if phase == "in_battle":
+                            if phase in ("in_battle", "active", ""):
                                 action_name = "deploy_card_right" if (self.total_actions % 2 == 0) else "deploy_card_left"
                             elif phase == "main_menu":
                                 action_name = "start_battle"
@@ -332,6 +332,16 @@ class PhoneGamePilot:
                             f"[bold green]⚡ [ACTION][/bold green] [bold white]{action_name.upper()}[/] "
                             f"({decision.get('source')}{strat_str}{card_str}{tile_str} | conf: {decision.get('confidence'):.2f})"
                         )
+                        # Pipe-safe audit trail: Rich may buffer on a redirected stdout.
+                        try:
+                            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_actions.log"), "a", encoding="utf-8") as _af:
+                                _af.write(
+                                    f"{time.strftime('%H:%M:%S')} {action_name} "
+                                    f"src={decision.get('source')} conf={decision.get('confidence'):.2f} "
+                                    f"phase={phase} n={self.total_actions}\n"
+                                )
+                        except OSError:
+                            pass
                     except Exception as e:
                         console.print(f"[bold red]❌ [ADB DISPATCH ERROR][/bold red] Failed to actuate {action_name}: {e}")
 
