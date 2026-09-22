@@ -105,6 +105,8 @@ class PilotCore:
             t0 = time.perf_counter()
 
             try:
+                decision = self.last_decision or {"action": "wait", "source": "init"}
+
                 # 1. Grab Frame
                 raw_frame = self.vision.capture_frame()
                 reg = self.vision.region

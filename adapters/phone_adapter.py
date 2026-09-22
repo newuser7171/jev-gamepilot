@@ -18,9 +18,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-# Common ADB paths on Windows
+# Common ADB paths on Windows (machine-local paths stay out of source control)
 POSSIBLE_ADB_PATHS = [
-    r"C:\Users\newuser\Downloads\platform-tools-latest-windows\platform-tools\adb.exe",
     os.path.expanduser(r"~\Downloads\platform-tools-latest-windows\platform-tools\adb.exe"),
     "adb",
     os.path.expanduser(r"~\AppData\Local\Android\Sdk\platform-tools\adb.exe"),
@@ -96,6 +95,14 @@ class AdbController:
         self._new_frame_event = threading.Event()
         self._streaming = False
         self._stream_thread: Optional[threading.Thread] = None
+
+        # Counter state used by dispatch cycles (safe under __new__ partial init too)
+        self._card_slot_idx = 0
+        self._solitaire_col_idx = 0
+        self._solitaire_found_idx = 0
+        self._sol_xfer_step = 0
+        self._clash_card_idx = 0
+        self._clash_spell_idx = 0
 
         self._check_connection()
 
@@ -497,6 +504,15 @@ class AdbController:
             ty = int(self.screen_height * 0.28)
             self.swipe(fx, fy, tx, ty, duration_ms=260)
 
+    def _frame_gate(self):
+        """Lazy frame-lock for partial construction (tests / __new__) and cold start."""
+        lock = getattr(self, "_frame_lock", None)
+        if lock is None:
+            lock = self._frame_lock = threading.Lock()
+        if not hasattr(self, "_latest_frame"):
+            self._latest_frame = None
+        return lock
+
     def _get_solitaire_layout(self) -> Dict[str, Any]:
         """
         Dynamically detects Solitaire layout from latest frame or applies calibrated standards.
@@ -513,7 +529,7 @@ class AdbController:
 
         # Portrait mode: default to standard right-handed layout unless left-hand stock is detected
         stock_on_right = True
-        with self._frame_lock:
+        with self._frame_gate():
             frame = self._latest_frame
 
         if frame is not None:
@@ -556,7 +572,7 @@ class AdbController:
         if self.is_landscape:
             return int(h * 0.55)
 
-        with self._frame_lock:
+        with self._frame_gate():
             frame = self._latest_frame
 
         if frame is not None:
@@ -656,7 +672,7 @@ class AdbController:
         Searches inner felt strictly between table boundaries to prevent pocket false-positives.
         """
         if frame is None:
-            with self._frame_lock:
+            with self._frame_gate():
                 frame = self._latest_frame.copy() if self._latest_frame is not None else None
         if frame is None:
             return None
@@ -841,6 +857,10 @@ class AdbController:
     ):
         """Maps game action names into physical Android touch gestures."""
         act = action_name.lower().strip()
+
+        # Idle / hold-course actions must never inject a touch.
+        if act in {"wait", "maintain_course", "maintain_heading", "glide", "stand_idle", "none"}:
+            return
 
         # 1. 3-Lane Runner actions (Subway Surfers, Temple Run)
         if "hoverboard" in act or "shield" in act:

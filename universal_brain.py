@@ -16,6 +16,8 @@ import threading
 import time
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 from dotenv import load_dotenv
 
 from profile_manager import GameAction, GameProfile

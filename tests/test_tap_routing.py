@@ -29,10 +29,8 @@ class TapRoutingTests(unittest.TestCase):
             with self.subTest(action=action), patch.object(self.phone, method) as specific, \
                     patch.object(self.phone, "tap") as generic:
                 self.phone.dispatch_action(action)
-                if method == "tap_solitaire_column":
-                    specific.assert_called_once_with(*args, y_ratio=.55)
-                else:
-                    specific.assert_called_once_with(*args)
+                # Named columns use dynamic CV/geometric y (no fixed y_ratio).
+                specific.assert_called_once_with(*args)
                 generic.assert_not_called()
 
     def test_phone_jump_tap_and_double_jump_are_not_swipes(self):
