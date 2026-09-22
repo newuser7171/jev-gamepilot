@@ -1,10 +1,11 @@
-"""Regression: Clash tempo planner, spell gating, counter-push window."""
+"""Regression: Clash tempo planner, spell gating, counter-push window, phase stickiness."""
 import unittest
 
 from adapters.clash_adapter import TacticalReflexPolicy
 from clash_jev.moves import spell_targets
 from clash_jev.state import BattleState, HandCard, LaneView
 from clash_jev.units import Unit
+from universal_vision import UniversalVision
 
 
 def make_state(
@@ -188,6 +189,91 @@ class SpellGatingTests(unittest.TestCase):
         self.assertIsNotNone(sq)
         self.assertTrue(sq.name.startswith("enemy_"))
         self.assertNotIn("tower", sq.name)
+
+
+class PhaseHysteresisTests(unittest.TestCase):
+    """False main_menu blips must not exit battle or reset the match clock."""
+
+    def setUp(self):
+        self.vision = UniversalVision()
+
+    def test_single_menu_blip_stays_in_battle(self):
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("in_battle"), "in_battle")
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("main_menu"), "in_battle")
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("in_battle"), "in_battle")
+
+    def test_sustained_menu_leaves_battle(self):
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("in_battle"), "in_battle")
+        results = [self.vision.apply_clash_phase_hysteresis("main_menu") for _ in range(4)]
+        self.assertEqual(results[-1], "main_menu")
+        self.assertTrue(all(r == "in_battle" for r in results[:3]))
+
+    def test_matchmaking_and_game_over_streak_like_menu(self):
+        # Single false game_over / matchmaking mid-battle must NOT exit —
+        # it zeroed _push_counter via note_battle_start and pinned cycle right.
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("in_battle"), "in_battle")
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("game_over"), "in_battle")
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("in_battle"), "in_battle")
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("matchmaking"), "in_battle")
+        # Fresh streak: sustained game_over still leaves after N frames
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("in_battle"), "in_battle")
+        results = [self.vision.apply_clash_phase_hysteresis("game_over") for _ in range(4)]
+        self.assertEqual(results[-1], "game_over")
+        self.assertTrue(all(r == "in_battle" for r in results[:3]))
+
+    def test_blip_then_battle_clears_menu_streak(self):
+        self.vision.apply_clash_phase_hysteresis("in_battle")
+        self.vision.apply_clash_phase_hysteresis("main_menu")
+        self.vision.apply_clash_phase_hysteresis("main_menu")
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("in_battle"), "in_battle")
+        # Streak reset — two more menu frames still not enough
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("main_menu"), "in_battle")
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("main_menu"), "in_battle")
+
+    def test_mixed_non_battle_blips_stay_in_battle(self):
+        # game_over blip, then matchmaking blip — streak must not treat them
+        # as one continuous exit; each is interrupted by in_battle.
+        self.vision.apply_clash_phase_hysteresis("in_battle")
+        self.vision.apply_clash_phase_hysteresis("game_over")
+        self.vision.apply_clash_phase_hysteresis("in_battle")
+        self.vision.apply_clash_phase_hysteresis("matchmaking")
+        self.vision.apply_clash_phase_hysteresis("in_battle")
+        self.assertEqual(self.vision.apply_clash_phase_hysteresis("main_menu"), "in_battle")
+
+
+class CycleLaneTests(unittest.TestCase):
+    """cycle strategy must alternate bridges — no left-bridge monoculture."""
+
+    def setUp(self):
+        self.policy = TacticalReflexPolicy()
+
+    def test_cycle_default_fallback_alternates(self):
+        card = HandCard(0, "knight", True)
+        state = make_state(elixir=8, hand=[card])
+        names = []
+        for _ in range(4):
+            sq = self.policy.select_square("cycle", card, state)
+            self.assertIsNotNone(sq)
+            names.append(sq.name)
+        self.assertIn("left_bridge", names)
+        self.assertIn("right_bridge", names)
+        # No three-in-a-row same lane on empty legal set
+        for i in range(len(names) - 2):
+            self.assertFalse(names[i] == names[i + 1] == names[i + 2], names)
+
+    def test_push_counter_does_not_skew_cycle_parity(self):
+        """evaluate_strategy push increments must not flip cycle's next lane."""
+        card = HandCard(0, "knight", True)
+        state = make_state(elixir=9, hand=[card])
+        # First cycle tap
+        sq1 = self.policy.select_square("cycle", card, state)
+        self.assertIsNotNone(sq1)
+        # Simulate a push decision bumping the shared push counter
+        self.policy._push_counter += 3
+        # Next cycle tap must still be the opposite lane
+        sq2 = self.policy.select_square("cycle", card, state)
+        self.assertIsNotNone(sq2)
+        self.assertNotEqual(sq1.name, sq2.name, f"{sq1.name} then {sq2.name}")
 
 
 if __name__ == "__main__":

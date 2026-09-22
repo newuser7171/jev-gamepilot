@@ -735,6 +735,7 @@ class UniversalBrain:
             phase = getattr(scene, "game_phase", "")
             if phase == "matchmaking":
                 self._clash_was_in_battle = False
+                self._clash_battle_clock_armed = False
                 return {
                     "action": "wait",
                     "threat_score": 0.0,
@@ -745,6 +746,7 @@ class UniversalBrain:
                 }
             if phase == "main_menu":
                 self._clash_was_in_battle = False
+                self._clash_battle_clock_armed = False
                 return {
                     "action": "start_battle",
                     "threat_score": 0.0,
@@ -755,6 +757,7 @@ class UniversalBrain:
                 }
             elif phase == "game_over":
                 self._clash_was_in_battle = False
+                self._clash_battle_clock_armed = False
                 return {
                     "action": "confirm_ok",
                     "threat_score": 0.0,
@@ -766,10 +769,13 @@ class UniversalBrain:
             else:  # in_battle
                 # 3-Tier Hierarchical Battle Intelligence Pipeline from clash-jev
                 if self.clash_adapter is not None:
-                    # Reset match clock on menu/queue -> battle edge so opening tempo works.
+                    # Reset match clock only on a real menu/queue -> battle edge.
+                    # A one-frame false main_menu blip must NOT restart opening tempo.
                     if not getattr(self, "_clash_was_in_battle", False):
                         self._clash_was_in_battle = True
-                        self.clash_adapter.note_battle_start()
+                        if not getattr(self, "_clash_battle_clock_armed", False):
+                            self.clash_adapter.note_battle_start()
+                            self._clash_battle_clock_armed = True
                     raw_frame = getattr(scene, "raw_frame", None)
                     if raw_frame is not None:
                         h, w = raw_frame.shape[:2]
@@ -786,6 +792,7 @@ class UniversalBrain:
                     )
                     return decision
                 else:
+                    # Adapter missing — never blind-deploy while elixir strategy says hold.
                     current_elixir = getattr(scene, "elixir", 5)
                     now = time.time()
                     self._last_clash_deploy = getattr(self, "_last_clash_deploy", 0.0)
@@ -797,6 +804,16 @@ class UniversalBrain:
                             "confidence": 0.98,
                             "latency_ms": 0.2,
                             "source": "elixir_recharge_standby",
+                            "target_coords": None,
+                        }
+
+                    if scene.threat_urgency < 0.40 and current_elixir < 6:
+                        return {
+                            "action": "wait",
+                            "threat_score": scene.threat_urgency,
+                            "confidence": 0.96,
+                            "latency_ms": 0.2,
+                            "source": "rts_hold_low_elixir",
                             "target_coords": None,
                         }
 

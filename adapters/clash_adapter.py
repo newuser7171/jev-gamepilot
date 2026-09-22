@@ -102,6 +102,10 @@ class TacticalReflexPolicy:
 
     def __init__(self):
         self._push_counter = 0
+        # Dedicated lane alternator for the cycle/default square fallback —
+        # evaluate_strategy's push paths share _push_counter and would skew
+        # cycle parity between taps.
+        self._cycle_lane = 0
         # elapsed_s of last real defend decision — feeds counter-push window
         self._last_defend_elapsed = -999.0
 
@@ -360,7 +364,12 @@ class TacticalReflexPolicy:
                 if sq.name == "right_bridge":
                     return sq
 
-        # Default fallback
+        # Default fallback — alternate lanes, never pin every cycle to left bridge
+        self._cycle_lane += 1
+        want = "left_bridge" if (self._cycle_lane % 2 == 0) else "right_bridge"
+        for sq in squares:
+            if sq.name == want:
+                return sq
         for sq in squares:
             if "bridge" in sq.name:
                 return sq
@@ -403,8 +412,14 @@ class ClashBattleAdapter:
         self.mapper.update_resolution(width, height)
 
     def note_battle_start(self):
-        """Reset the match clock — call when phase enters in_battle from menu/queue."""
+        """Reset the match clock — call when phase enters in_battle from menu/queue.
+
+        Does NOT zero _cycle_lane: a false matchmaking/game_over edge mid-battle
+        would re-arm this and pin every subsequent cycle tap to the same bridge.
+        Lane alternation runs for the adapter's lifetime.
+        """
         self.start_time = time.time()
+        self._push_counter = 0
         if self.tactical_policy is not None:
             self.tactical_policy._last_defend_elapsed = -999.0
             self.tactical_policy._push_counter = 0

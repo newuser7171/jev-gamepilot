@@ -25,20 +25,20 @@ CARD_WIDTH, CARD_HEIGHT = 54, 66
 _NEXT_BOX = (52, 591, 25, 31)
 
 # Minimum shape-match score in the hand and as the Next thumbnail, and minimum lead over the runner-up.
-# The right card scores 0.71+ in the hand and 0.84+ as the Next thumbnail, at least 0.30 ahead.
-_HAND_MATCH = 0.55
-_NEXT_MATCH = 0.70
-_MATCH_MARGIN = 0.15
+# Live deck art varies by level/rarity frame — thresholds accept a clear winner without a huge margin.
+_HAND_MATCH = 0.42
+_NEXT_MATCH = 0.62
+_MATCH_MARGIN = 0.08
 # A banner ("No card selected") can cover the top of a card. The lower half alone tells cards apart
 # less surely, so it is only used when the whole picture is not decisive, and has to be near-perfect.
-_LOWER_HALF_MATCH = 0.85
-_LOWER_HALF_MARGIN = 0.30
+_LOWER_HALF_MATCH = 0.70
+_LOWER_HALF_MARGIN = 0.18
 _THUMB = (14, 16)  # width, height of a shape thumbnail
 # Fine-detail match, tried first. The right card scores 0.73+ lit, greyed or washed out. A card enlarged
 # while it is being dragged scores near 0 here and is left to the shape match.
 _DETAIL_SIZE = (28, 32)
 _DETAIL_SIGMA = 2.0
-_DETAIL_MATCH = 0.45
+_DETAIL_MATCH = 0.38
 _EMPTY_TEXTURE = 12.0
 _EMPTY_SATURATION = 150.0
 # A playable card is in full colour top to bottom: lit cards measure >= 39 mean saturation in their

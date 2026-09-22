@@ -215,40 +215,46 @@ class PhoneGamePilot:
                 if "clash" in self.profile.id:
                     strat = str(decision.get("strategy") or "")
                     no_play = strat in {"save_elixir", "hold_elixir_for_threat", "wait_for_full"}
-                    # Any wait-from-adapter (couldn't afford / NO_PLAY) is a real choice.
                     adapter_wait = action_name in ("wait", "maintain_course", "stand_idle") and (
                         no_play or strat.startswith("defend") or strat.startswith("push") or strat.startswith("counter") or strat in ("cycle", "build_push")
                     )
-                    if phase == "main_menu":
-                        max_idle = 1.50  # queue the next match promptly
+                    # NO_PLAY is a hard hold — never promote a deploy out of it.
+                    if no_play and phase not in ("main_menu", "game_over", "matchmaking"):
+                        max_idle = 9999.0
+                    elif phase == "main_menu":
+                        max_idle = 1.50
                     elif phase == "game_over":
                         max_idle = 1.00
                     elif adapter_wait and scene.threat_urgency < 0.70 and scene.elixir < 5:
-                        max_idle = 9999.0  # broke or deliberately holding — don't outvote
-                    elif no_play and scene.threat_urgency < 0.40:
-                        max_idle = 9999.0  # strategy said hold — never outvote it
+                        max_idle = 9999.0
+                    elif adapter_wait and scene.threat_urgency < 0.40:
+                        max_idle = 9999.0
                     elif no_play or scene.elixir < 5:
                         max_idle = 5.50
                     else:
                         max_idle = 2.20
                 if action_name in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > max_idle):
                     if phase != "matchmaking" and "8ball" not in self.profile.id and "pool" not in self.profile.id:
-                        # Prefer vision's recommendation over blind genre rotation.
                         scene_pick = (getattr(scene, "recommended_action", "") or "").strip()
                         valid_names = {a.name for a in self.profile.actions}
+                        # Never promote menu/game_over actions from a battle-phase idle.
+                        if phase in ("in_battle", "active", "") and scene_pick in ("start_battle", "confirm_ok"):
+                            scene_pick = ""
                         if scene_pick and scene_pick not in {"wait", "maintain_course", "stand_idle"} and (
                             scene_pick in valid_names
                             or any(scene_pick in a.name or a.name in scene_pick for a in self.profile.actions)
                         ):
                             action_name = scene_pick
                         elif "clash" in self.profile.id:
-                            if phase in ("in_battle", "active", ""):
+                            # Blind slot-rotate deploy only as last resort when adapter gave nothing.
+                            strat = str(decision.get("strategy") or "")
+                            if strat in {"save_elixir", "hold_elixir_for_threat"} and phase in ("in_battle", "active", ""):
+                                action_name = "wait"
+                            elif phase in ("in_battle", "active", ""):
                                 if scene.threat_urgency >= 0.40 and scene.nearest_threat is not None:
-                                    # Enemy push in our half — defend center, don't keep left-laning.
                                     action_name = "deploy_defense_center"
-                                elif getattr(scene, "elixir", 10) >= 7 and (self.total_actions % 5 == 4):
-                                    action_name = "deploy_spell_center"
                                 else:
+                                    # Alternate lanes — no left-bridge monoculture.
                                     action_name = "deploy_card_right" if (self.total_actions % 2 == 0) else "deploy_card_left"
                             elif phase == "main_menu":
                                 action_name = "start_battle"

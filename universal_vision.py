@@ -62,6 +62,34 @@ class UniversalVision:
         self.last_player_pos: Optional[Tuple[int, int]] = None
         self.last_frame_gray: Optional[np.ndarray] = None
         self.last_time: float = time.time()
+        # Clash phase hysteresis: once in_battle, only leave on sustained non-battle evidence.
+        self._clash_phase: str = ""
+        self._clash_phase_streak: int = 0
+        self._CLASH_MENU_STREAK = 4  # consecutive non-battle frames before main_menu
+
+    def apply_clash_phase_hysteresis(self, raw_phase: str) -> str:
+        """Stick in_battle until non-battle is confirmed for N consecutive frames.
+
+        A single-frame false main_menu / matchmaking / game_over must not exit
+        battle — each of those resets the match clock and lane counter mid-fight
+        (false game_over zeroed _push_counter, pinning every cycle to right_bridge).
+        All non-battle labels streak the same way when sticky phase is in_battle.
+        """
+        if raw_phase == "in_battle":
+            self._clash_phase = "in_battle"
+            self._clash_phase_streak = 0
+            return raw_phase
+        # Non-battle candidate (main_menu, matchmaking, game_over, other)
+        if self._clash_phase == "in_battle":
+            self._clash_phase_streak += 1
+            if self._clash_phase_streak < self._CLASH_MENU_STREAK:
+                return "in_battle"
+            self._clash_phase = raw_phase
+            self._clash_phase_streak = 0
+            return raw_phase
+        self._clash_phase = raw_phase
+        self._clash_phase_streak = 0
+        return raw_phase
 
     def set_player_template(self, template_bgr: np.ndarray):
         """Sets user-calibrated avatar sprite template for exact tracking."""
@@ -300,14 +328,30 @@ class UniversalVision:
                     dark_gaps += 1
             card_hand_present = cards_ok >= 3 and dark_gaps >= 2
 
-            # Phase priority: matchmaking > wide elixir bar / card hand (battle)
-            # > blue OK (game over) > green/yellow Battle button (menu) > default.
-            # Card hand must outrank the button — gold towers/green turf otherwise
-            # read as main_menu mid-fight.
+            # Phase priority with hysteresis: matchmaking > battle HUD > game_over > menu.
+            # Mid-battle false menu (turf/button) was resetting the match clock every few frames.
+            raw_phase = ""
             if red_cancel.sum() > 800:
-                scene.game_phase = "matchmaking"
+                raw_phase = "matchmaking"
             elif elixir_bar or card_hand_present:
-                scene.game_phase = "in_battle"
+                raw_phase = "in_battle"
+            else:
+                ok_region = frame_bgr[int(h * 0.60) : int(h * 0.78), int(w * 0.28) : int(w * 0.72)]
+                blue_pixels = (ok_region[:, :, 0] > 180) & (ok_region[:, :, 2] < 100) & (ok_region[:, :, 1] < 160)
+                blue_n = int(blue_pixels.sum())
+                blue_area = ok_region.shape[0] * ok_region.shape[1]
+                if blue_n > 3500 and blue_n > 0.12 * blue_area:
+                    raw_phase = "game_over"
+                elif battle_button:
+                    raw_phase = "main_menu"
+                else:
+                    # Ambiguous mid-transition — treat as battle evidence (sticky).
+                    raw_phase = "in_battle"
+
+            # Hysteresis: leaving in_battle requires N consecutive non-battle frames
+            # (except matchmaking / game_over which are high-confidence UI).
+            scene.game_phase = self.apply_clash_phase_hysteresis(raw_phase)
+            if scene.game_phase == "in_battle":
                 if elixir_bar:
                     cols = np.where(col_act)[0]
                 else:
@@ -316,22 +360,10 @@ class UniversalVision:
                     scene.elixir = max(1, min(10, int((len(cols) - 55) / 73.0 + 0.5)))
                 elif getattr(scene, "elixir", 0) <= 0:
                     scene.elixir = 4
-            else:
-                # Victory/defeat OK: large SOLID blue button mid-screen. Card art
-                # and river pixels are sparse blue — require density + area.
-                ok_region = frame_bgr[int(h * 0.60) : int(h * 0.78), int(w * 0.28) : int(w * 0.72)]
-                blue_pixels = (ok_region[:, :, 0] > 180) & (ok_region[:, :, 2] < 100) & (ok_region[:, :, 1] < 160)
-                blue_n = int(blue_pixels.sum())
-                blue_area = ok_region.shape[0] * ok_region.shape[1]
-                if blue_n > 3500 and blue_n > 0.12 * blue_area:
-                    scene.game_phase = "game_over"
-                    scene.recommended_action = "confirm_ok"
-                elif battle_button:
-                    scene.game_phase = "main_menu"
-                    scene.recommended_action = "start_battle"
-                else:
-                    # Ambiguous mid-transition — stay in battle; strategy owns the pick.
-                    scene.game_phase = "in_battle"
+            if scene.game_phase == "game_over":
+                scene.recommended_action = "confirm_ok"
+            elif scene.game_phase == "main_menu":
+                scene.recommended_action = "start_battle"
 
             # Specialized Clash Royale RTS Perception (Enemy Unit Health Bar Detection)
             if scene.game_phase == "in_battle":
