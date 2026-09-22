@@ -39,7 +39,9 @@ class PhoneGamePilot:
 
         self.is_running = False
         self.total_actions = 0
-        self.last_action_time = 0.0
+        # Seed to now: a 0.0 epoch makes (now - last) astronomical, so the first
+        # idle tick instantly beats even a 9999s clash hold window.
+        self.last_action_time = time.time()
         self.last_battle_launch_time = 0.0
         self.last_pkg_check_time = 0.0
         self.current_package = "Unknown"
@@ -182,11 +184,6 @@ class PhoneGamePilot:
 
                 # 4. Dispatch Physical Android Gesture
                 now = time.time()
-                if action_name == "start_battle":
-                    if now - self.last_battle_launch_time < 6.0:
-                        action_name = "wait"
-                    else:
-                        self.last_battle_launch_time = now
 
                 # Adaptive Max Idle Watchdog per Game Genre (Ensures Continuous Active Play for ALL Games)
                 if "earntodie" in self.profile.id:
@@ -213,6 +210,27 @@ class PhoneGamePilot:
                     max_idle = 1.50  # General default
 
                 phase = getattr(scene, "game_phase", "")
+                # Clash: honor NO_PLAY / save_elixir — only force a deploy when
+                # elixir is actually spendable or a threat is in our half.
+                if "clash" in self.profile.id:
+                    strat = str(decision.get("strategy") or "")
+                    no_play = strat in {"save_elixir", "hold_elixir_for_threat", "wait_for_full"}
+                    # Any wait-from-adapter (couldn't afford / NO_PLAY) is a real choice.
+                    adapter_wait = action_name in ("wait", "maintain_course", "stand_idle") and (
+                        no_play or strat.startswith("defend") or strat.startswith("push") or strat.startswith("counter") or strat in ("cycle", "build_push")
+                    )
+                    if phase == "main_menu":
+                        max_idle = 1.50  # queue the next match promptly
+                    elif phase == "game_over":
+                        max_idle = 1.00
+                    elif adapter_wait and scene.threat_urgency < 0.70 and scene.elixir < 5:
+                        max_idle = 9999.0  # broke or deliberately holding — don't outvote
+                    elif no_play and scene.threat_urgency < 0.40:
+                        max_idle = 9999.0  # strategy said hold — never outvote it
+                    elif no_play or scene.elixir < 5:
+                        max_idle = 5.50
+                    else:
+                        max_idle = 2.20
                 if action_name in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > max_idle):
                     if phase != "matchmaking" and "8ball" not in self.profile.id and "pool" not in self.profile.id:
                         # Prefer vision's recommendation over blind genre rotation.
@@ -225,7 +243,13 @@ class PhoneGamePilot:
                             action_name = scene_pick
                         elif "clash" in self.profile.id:
                             if phase in ("in_battle", "active", ""):
-                                action_name = "deploy_card_right" if (self.total_actions % 2 == 0) else "deploy_card_left"
+                                if scene.threat_urgency >= 0.40 and scene.nearest_threat is not None:
+                                    # Enemy push in our half — defend center, don't keep left-laning.
+                                    action_name = "deploy_defense_center"
+                                elif getattr(scene, "elixir", 10) >= 7 and (self.total_actions % 5 == 4):
+                                    action_name = "deploy_spell_center"
+                                else:
+                                    action_name = "deploy_card_right" if (self.total_actions % 2 == 0) else "deploy_card_left"
                             elif phase == "main_menu":
                                 action_name = "start_battle"
                             elif phase == "game_over":
@@ -266,8 +290,15 @@ class PhoneGamePilot:
                         elif self.profile.actions:
                             action_name = self.profile.actions[0].name
 
+                # Single launch gate AFTER idle may re-promote start_battle.
+                if action_name == "start_battle":
+                    if now - self.last_battle_launch_time < 6.0:
+                        action_name = "wait"
+                    else:
+                        self.last_battle_launch_time = now
+
                 if "clash" in self.profile.id and action_name != "start_battle":
-                    cooldown = 1.2
+                    cooldown = 1.8  # defend/attack taps need elixir+deploy-time gap
                 elif "card" in self.profile.id:
                     cooldown = 0.65
                 elif "8ball" in self.profile.id or "pool" in self.profile.id:
@@ -337,8 +368,10 @@ class PhoneGamePilot:
                             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_actions.log"), "a", encoding="utf-8") as _af:
                                 _af.write(
                                     f"{time.strftime('%H:%M:%S')} {action_name} "
-                                    f"src={decision.get('source')} conf={decision.get('confidence'):.2f} "
-                                    f"phase={phase} n={self.total_actions}\n"
+                                    f"src={decision.get('source')} strat={decision.get('strategy')} "
+                                    f"card={decision.get('card_name')} sq={decision.get('square_name')} "
+                                    f"conf={decision.get('confidence')} phase={phase} elixir={getattr(scene, 'elixir', '?')} "
+                                    f"n={self.total_actions}\n"
                                 )
                         except OSError:
                             pass

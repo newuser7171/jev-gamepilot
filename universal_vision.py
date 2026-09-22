@@ -259,55 +259,92 @@ class UniversalVision:
             elixir_region = frame_bgr[int(h * 0.95) : int(h * 0.995), int(w * 0.15) : int(w * 0.98)]
             magenta = (elixir_region[:, :, 2] > 160) & (elixir_region[:, :, 0] > 160) & (elixir_region[:, :, 1] < 120)
 
-            # Four-card hand at the bottom is a stronger in-battle signal than the
-            # yellow-button heuristic, which false-fires on gold arena/card art.
-            hand_y1, hand_y2 = int(h * 0.87), int(h * 0.99)
-            hand_region = frame_bgr[hand_y1:hand_y2, int(w * 0.15) : int(w * 0.92)]
-            hand_gray = cv2.cvtColor(hand_region, cv2.COLOR_BGR2GRAY)
-            hand_edges = cv2.Canny(hand_gray, 60, 160)
-            card_hand_present = (
-                hand_region.size > 0
-                and float(hand_edges.mean()) > 8.0
-                and hand_region.shape[1] > 200
-            )
+            # Wide horizontal magenta elixir bar (battle HUD), not scattered
+            # magenta chrome on the menu nav (that was only ~24 columns).
+            col_act = magenta.sum(axis=0) > 2
+            elixir_run = 0
+            _run = 0
+            for _a in col_act:
+                _run = _run + 1 if _a else 0
+                elixir_run = max(elixir_run, _run)
+            elixir_bar = elixir_run > 100
 
+            # Dense solid green Battle button (menu). Arena turf is textured
+            # and fails the strict G-dominance mask used here.
+            menu_box = frame_bgr[int(h * 0.76) : int(h * 0.88), int(w * 0.25) : int(w * 0.75)]
+            green_btn = (
+                (menu_box[:, :, 1] > 160)
+                & (menu_box[:, :, 1] > menu_box[:, :, 0] + 60)
+                & (menu_box[:, :, 1] > menu_box[:, :, 2] + 60)
+            )
+            battle_button = int(green_btn.sum()) > 5000 or int(yellow_pixels.sum()) > 2500
+
+            # Four card slots with dark gaps between them — main-menu nav icons
+            # light the gaps, so require >=2 dark gaps to call it a hand.
+            hand_y1, hand_y2 = int(h * 0.895), int(h * 0.975)
+            card_centers = (0.287, 0.463, 0.634, 0.806)
+            gap_centers = (0.375, 0.548, 0.720)
+            cards_ok = 0
+            for xc in card_centers:
+                reg = frame_bgr[hand_y1:hand_y2, int(w * (xc - 0.07)) : int(w * (xc + 0.07))]
+                if reg.size == 0:
+                    continue
+                if float(cv2.cvtColor(reg, cv2.COLOR_BGR2GRAY).std()) > 25:
+                    cards_ok += 1
+            dark_gaps = 0
+            for xc in gap_centers:
+                reg = frame_bgr[hand_y1:hand_y2, int(w * (xc - 0.03)) : int(w * (xc + 0.03))]
+                if reg.size == 0:
+                    continue
+                if float(cv2.cvtColor(reg, cv2.COLOR_BGR2GRAY).mean()) < 90:
+                    dark_gaps += 1
+            card_hand_present = cards_ok >= 3 and dark_gaps >= 2
+
+            # Phase priority: matchmaking > wide elixir bar / card hand (battle)
+            # > blue OK (game over) > green/yellow Battle button (menu) > default.
+            # Card hand must outrank the button — gold towers/green turf otherwise
+            # read as main_menu mid-fight.
             if red_cancel.sum() > 800:
                 scene.game_phase = "matchmaking"
-            elif magenta.sum() > 250 or card_hand_present:
+            elif elixir_bar or card_hand_present:
                 scene.game_phase = "in_battle"
-                # Exact elixir calculation: measure magenta bar pixel width
-                cols = np.where(magenta.sum(axis=0) > 2)[0]
-                if len(cols) > 0:
-                    filled_w = len(cols)
-                    scene.elixir = max(1, min(10, int((filled_w - 55) / 73.0 + 0.5)))
+                if elixir_bar:
+                    cols = np.where(col_act)[0]
                 else:
-                    scene.elixir = 4  # Default to playable elixir so it never starves
-                if not scene.recommended_action or scene.recommended_action == "wait":
-                    scene.recommended_action = "deploy_card_left"
-            elif yellow_pixels.sum() > 2500:
-                scene.game_phase = "main_menu"
-                scene.recommended_action = "start_battle"
+                    cols = np.where(magenta.sum(axis=0) > 2)[0]
+                if len(cols) > 0:
+                    scene.elixir = max(1, min(10, int((len(cols) - 55) / 73.0 + 0.5)))
+                elif getattr(scene, "elixir", 0) <= 0:
+                    scene.elixir = 4
             else:
-                ok_region = frame_bgr[int(h * 0.80) : int(h * 0.90), int(w * 0.35) : int(w * 0.65)]
-                blue_pixels = (ok_region[:, :, 0] > 180) & (ok_region[:, :, 2] < 100)
-                if blue_pixels.sum() > 800:
+                # Victory/defeat OK: large SOLID blue button mid-screen. Card art
+                # and river pixels are sparse blue — require density + area.
+                ok_region = frame_bgr[int(h * 0.60) : int(h * 0.78), int(w * 0.28) : int(w * 0.72)]
+                blue_pixels = (ok_region[:, :, 0] > 180) & (ok_region[:, :, 2] < 100) & (ok_region[:, :, 1] < 160)
+                blue_n = int(blue_pixels.sum())
+                blue_area = ok_region.shape[0] * ok_region.shape[1]
+                if blue_n > 3500 and blue_n > 0.12 * blue_area:
                     scene.game_phase = "game_over"
                     scene.recommended_action = "confirm_ok"
+                elif battle_button:
+                    scene.game_phase = "main_menu"
+                    scene.recommended_action = "start_battle"
                 else:
-                    # Generic modal or reward screen — still play it like a battle
-                    # so the clash idle path never dead-ends on "active".
+                    # Ambiguous mid-transition — stay in battle; strategy owns the pick.
                     scene.game_phase = "in_battle"
-                    scene.recommended_action = "deploy_card_left"
 
             # Specialized Clash Royale RTS Perception (Enemy Unit Health Bar Detection)
             if scene.game_phase == "in_battle":
-                friendly_y1 = int(h * 0.45)
+                # Our half only (below the river) — y grows downward on portrait.
+                friendly_y1 = int(h * 0.55)
                 friendly_y2 = int(h * 0.77)
                 friendly_zone = frame_bgr[friendly_y1:friendly_y2, :]
 
-                # Enemy units carry crimson red health bars in our territory
+                # Enemy invader health bars: saturated crimson, wide enough to be a bar
+                # not a stray pixel from effects/tower trim.
                 enemy_red_mask = (friendly_zone[:, :, 2] > 180) & (friendly_zone[:, :, 1] < 75) & (friendly_zone[:, :, 0] < 75)
-                if enemy_red_mask.sum() > 35:
+                red_count = int(enemy_red_mask.sum())
+                if red_count > 120:
                     ry, rx = np.where(enemy_red_mask)
                     invader_x = int(np.median(rx))
                     invader_y = int(np.median(ry)) + friendly_y1

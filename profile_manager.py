@@ -342,6 +342,12 @@ DEFAULT_PROFILES: List[GameProfile] = [
         is_builtin=True,
         actions=[
             GameAction(
+                name="deploy_clash_card",
+                key="mouse_left",
+                description="Precise two-step deploy: tap card slot then target square from strategy (4-tuple coords)",
+                is_mouse_click=True,
+            ),
+            GameAction(
                 name="deploy_card_left",
                 key="mouse_left",
                 description="Select active card from bottom deck and deploy into left lane to attack or defend",

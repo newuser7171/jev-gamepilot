@@ -112,11 +112,16 @@ class TacticalReflexPolicy:
             return "push_left"
 
         # 2. Critical Immediate Defensive Response
-        # Check enemy units deep on our side
+        # Check enemy units deep on our side. Unknown/absent lane counts at low
+        # elixir are not a reason to spam bridges — require a real threat signal.
         left_threats = state.left.enemy_on_my_side
         right_threats = state.right.enemy_on_my_side
+        real_threat = (left_threats > 0 or right_threats > 0 or threat_urgency > 0.40)
 
-        if left_threats > 0 or right_threats > 0 or threat_urgency > 0.40:
+        if real_threat:
+            # Can't afford a body? Hold instead of donating elixir to the river.
+            if state.elixir < 3 and threat_urgency < 0.70:
+                return "save_elixir"
             if left_threats > 0 and right_threats > 0:
                 return "defend_centre"
             elif left_threats > 0:
@@ -166,12 +171,11 @@ class TacticalReflexPolicy:
         return "push_left" if (self._push_counter % 2 == 0) else "push_right"
 
     def select_card(self, strategy: str, state: BattleState) -> Optional[HandCard]:
-        ready_cards = [c for c in state.hand if c.ready]
+        # Unknown cards score as cost 3 — never let cost=None bypass the elixir gate.
+        affordable = [(c, (info(c.name).cost or 3)) for c in state.hand]
+        ready_cards = [c for c, cost in affordable if c.ready and cost <= state.elixir]
         if not ready_cards:
-            # Fallback to affordable cards if readiness flag was not lit
-            ready_cards = [
-                c for c in state.hand if info(c.name).cost is None or info(c.name).cost <= state.elixir
-            ]
+            ready_cards = [c for c, cost in affordable if cost <= state.elixir]
         if not ready_cards:
             return None
 
@@ -471,6 +475,24 @@ class ClashBattleAdapter:
             chosen_strategy = self.tactical_policy.evaluate_strategy(state, threat_urgency=threat_urgency)
             engine_source = "tactical_reflex"
             confidence = 0.94
+        else:
+            # Post-validate Jev: never defend a full bar or invent threats.
+            left_t = state.left.enemy_on_my_side
+            right_t = state.right.enemy_on_my_side
+            bridge_t = state.left.enemy_at_bridge + state.right.enemy_at_bridge
+            real_threat = left_t > 0 or right_t > 0 or bridge_t > 0 or threat_urgency > 0.40
+            if state.elixir >= 10 and chosen_strategy.startswith("defend") and threat_urgency < 0.70:
+                chosen_strategy = "push_left" if self._push_counter % 2 == 0 else "push_right"
+                self._push_counter += 1
+            elif chosen_strategy.startswith("defend") and state.elixir < 3 and threat_urgency < 0.70:
+                chosen_strategy = "save_elixir"
+            elif chosen_strategy.startswith("defend") and not real_threat:
+                # Jev saw a ghost — run local ladder instead.
+                chosen_strategy = self.tactical_policy.evaluate_strategy(state, threat_urgency=threat_urgency)
+                engine_source = "tactical_reflex"
+                confidence = 0.94
+            elif state.elixir >= 7 and threat_urgency < 0.40 and not real_threat and chosen_strategy in NO_PLAY:
+                chosen_strategy = "cycle"
 
         # Check for NO_PLAY strategies (holding/saving elixir)
         if chosen_strategy in NO_PLAY:
