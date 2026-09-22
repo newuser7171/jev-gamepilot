@@ -102,63 +102,85 @@ class TacticalReflexPolicy:
 
     def __init__(self):
         self._push_counter = 0
+        # elapsed_s of last real defend decision — feeds counter-push window
+        self._last_defend_elapsed = -999.0
+
+    @staticmethod
+    def tempo_thresholds(state: BattleState) -> Tuple[int, int]:
+        """(save_below, push_at) by elixir rate. Opening handled separately."""
+        rate = state.elixir_rate
+        if rate == "double":
+            return 3, 6
+        if rate == "triple":
+            return 2, 5
+        return 5, 8
 
     def evaluate_strategy(self, state: BattleState, threat_urgency: float = 0.0) -> str:
+        save_below, push_at = self.tempo_thresholds(state)
+        opening = state.elapsed_s < 12.0
+
+        left_threats = state.left.enemy_on_my_side
+        right_threats = state.right.enemy_on_my_side
+        bridge_left = state.left.enemy_at_bridge
+        bridge_right = state.right.enemy_at_bridge
+        real_threat = left_threats > 0 or right_threats > 0 or threat_urgency > 0.40
+
         # 1. Leaking Elixir Guard: NEVER sit at 10 elixir without spending
         if state.elixir >= 10 or state.seconds_at_full_elixir > 0.4:
-            # Force offensive push or deck cycle
             if state.left.enemy_on_their_side > state.right.enemy_on_their_side:
                 return "push_right"
             return "push_left"
 
         # 2. Critical Immediate Defensive Response
-        # Check enemy units deep on our side. Unknown/absent lane counts at low
-        # elixir are not a reason to spam bridges — require a real threat signal.
-        left_threats = state.left.enemy_on_my_side
-        right_threats = state.right.enemy_on_my_side
-        real_threat = (left_threats > 0 or right_threats > 0 or threat_urgency > 0.40)
-
-        if real_threat:
-            # Can't afford a body? Hold instead of donating elixir to the river.
-            if state.elixir < 3 and threat_urgency < 0.70:
-                return "save_elixir"
-            if left_threats > 0 and right_threats > 0:
+        if real_threat or bridge_left > 0 or bridge_right > 0:
+            self._last_defend_elapsed = state.elapsed_s
+            if real_threat or (bridge_left + bridge_right) > 0:
+                # Can't afford a body? Hold — unless this is the opening and we have a cheap play.
+                hold_floor = 3 if not opening else 2
+                if state.elixir < hold_floor and threat_urgency < 0.70:
+                    return "save_elixir"
+                if bridge_left > 0 and bridge_right == 0 and left_threats == 0 and right_threats == 0:
+                    return "defend_left"
+                if bridge_right > 0 and bridge_left == 0 and left_threats == 0 and right_threats == 0:
+                    return "defend_right"
+                if left_threats > 0 and right_threats > 0:
+                    return "defend_centre"
+                if left_threats > 0:
+                    return "defend_left"
+                if right_threats > 0:
+                    return "defend_right"
                 return "defend_centre"
-            elif left_threats > 0:
-                return "defend_left"
-            elif right_threats > 0:
-                return "defend_right"
-            else:
-                return "defend_centre"
 
-        # 3. Midfield Threats approaching River / Bridge
-        if state.left.enemy_at_bridge > 0:
-            return "defend_left"
-        if state.right.enemy_at_bridge > 0:
-            return "defend_right"
+        # 3. Counter-push conversion (defended in last ~10s, survivors still up)
+        if state.elapsed_s - self._last_defend_elapsed <= 10.0:
+            counter_floor = max(3, save_below - 2)
+            if state.left.mine_on_my_side > 0 or state.left.mine_at_bridge > 0:
+                if state.elixir >= counter_floor:
+                    return "counter_push_left"
+            if state.right.mine_on_my_side > 0 or state.right.mine_at_bridge > 0:
+                if state.elixir >= counter_floor:
+                    return "counter_push_right"
 
-        # 4. Counter-Push Conversion
-        # If we successfully defended and our survivors are crossing the river
-        if state.left.mine_on_my_side > 0 or state.left.mine_at_bridge > 0:
+        # 4. Opening (first 12s): take the river, never sit on a full hand
+        if opening:
+            if state.elixir >= 6:
+                self._push_counter += 1
+                return "push_left" if (self._push_counter % 2 == 0) else "push_right"
             if state.elixir >= 4:
-                return "counter_push_left"
-        if state.right.mine_on_my_side > 0 or state.right.mine_at_bridge > 0:
-            if state.elixir >= 4:
-                return "counter_push_right"
+                return "cycle"
+            return "save_elixir"
 
-        # 5. Heavy Push Formulation (High Elixir)
-        if state.elixir >= 8:
-            # Check if we have slow tank
+        # 5. Heavy Push Formulation (rate-aware threshold)
+        if state.elixir >= push_at:
             for card in state.hand:
                 card_tags = info(card.name).tags
                 if "slow" in card_tags and "tank" in card_tags:
                     return "build_push"
-            # Otherwise standard lane push
             self._push_counter += 1
             return "push_left" if (self._push_counter % 2 == 0) else "push_right"
 
-        # 6. Elixir Conservation / Recharge
-        if state.elixir < 5:
+        # 6. Elixir Conservation (rate-aware — double/triple dumps sooner)
+        if state.elixir < save_below:
             return "save_elixir"
 
         # 7. Deck Cycling
@@ -352,6 +374,13 @@ class ClashBattleAdapter:
     def update_resolution(self, width: int, height: int):
         self.mapper.update_resolution(width, height)
 
+    def note_battle_start(self):
+        """Reset the match clock — call when phase enters in_battle from menu/queue."""
+        self.start_time = time.time()
+        if self.tactical_policy is not None:
+            self.tactical_policy._last_defend_elapsed = -999.0
+            self.tactical_policy._push_counter = 0
+
     def extract_state_from_frame(
         self,
         frame_bgr: np.ndarray,
@@ -493,6 +522,16 @@ class ClashBattleAdapter:
                 confidence = 0.94
             elif state.elixir >= 7 and threat_urgency < 0.40 and not real_threat and chosen_strategy in NO_PLAY:
                 chosen_strategy = "cycle"
+            elif state.elapsed_s < 12.0 and state.elixir >= 4 and chosen_strategy in NO_PLAY:
+                # Opening: never sit — local says push/cycle.
+                chosen_strategy = self.tactical_policy.evaluate_strategy(state, threat_urgency=threat_urgency)
+                engine_source = "tactical_reflex"
+                confidence = 0.94
+            elif chosen_strategy in NO_PLAY and state.elixir >= self.tactical_policy.tempo_thresholds(state)[1]:
+                # Tempo says spend (double/triple push_at) but Jev said hold.
+                chosen_strategy = self.tactical_policy.evaluate_strategy(state, threat_urgency=threat_urgency)
+                engine_source = "tactical_reflex"
+                confidence = 0.94
 
         # Check for NO_PLAY strategies (holding/saving elixir)
         if chosen_strategy in NO_PLAY:

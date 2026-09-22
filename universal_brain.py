@@ -734,6 +734,7 @@ class UniversalBrain:
         if profile.id == "mobile_clash_royale":
             phase = getattr(scene, "game_phase", "")
             if phase == "matchmaking":
+                self._clash_was_in_battle = False
                 return {
                     "action": "wait",
                     "threat_score": 0.0,
@@ -742,7 +743,8 @@ class UniversalBrain:
                     "source": "matchmaking_standby",
                     "target_coords": None,
                 }
-            elif phase == "main_menu":
+            if phase == "main_menu":
+                self._clash_was_in_battle = False
                 return {
                     "action": "start_battle",
                     "threat_score": 0.0,
@@ -752,6 +754,7 @@ class UniversalBrain:
                     "target_coords": None,
                 }
             elif phase == "game_over":
+                self._clash_was_in_battle = False
                 return {
                     "action": "confirm_ok",
                     "threat_score": 0.0,
@@ -763,6 +766,10 @@ class UniversalBrain:
             else:  # in_battle
                 # 3-Tier Hierarchical Battle Intelligence Pipeline from clash-jev
                 if self.clash_adapter is not None:
+                    # Reset match clock on menu/queue -> battle edge so opening tempo works.
+                    if not getattr(self, "_clash_was_in_battle", False):
+                        self._clash_was_in_battle = True
+                        self.clash_adapter.note_battle_start()
                     raw_frame = getattr(scene, "raw_frame", None)
                     if raw_frame is not None:
                         h, w = raw_frame.shape[:2]
