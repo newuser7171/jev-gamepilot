@@ -192,12 +192,32 @@ class TacticalReflexPolicy:
         self._push_counter += 1
         return "push_left" if (self._push_counter % 2 == 0) else "push_right"
 
+    @staticmethod
+    def _real_threat_count(state: BattleState) -> int:
+        return (
+            state.left.enemy_on_my_side
+            + state.right.enemy_on_my_side
+            + state.left.enemy_at_bridge
+            + state.right.enemy_at_bridge
+        )
+
     def select_card(self, strategy: str, state: BattleState) -> Optional[HandCard]:
         # Unknown cards score as cost 3 — never let cost=None bypass the elixir gate.
         affordable = [(c, (info(c.name).cost or 3)) for c in state.hand]
         ready_cards = [c for c, cost in affordable if c.ready and cost <= state.elixir]
         if not ready_cards:
             ready_cards = [c for c, cost in affordable if cost <= state.elixir]
+        if not ready_cards:
+            return None
+
+        # Spells never answer cycle/push/build. On defend they only fire into a real multi-body pile —
+        # single-target chip (empty fireball at a tower) is wasted elixir.
+        threat_count = self._real_threat_count(state)
+        if strategy.startswith("defend"):
+            if threat_count < 2:
+                ready_cards = [c for c in ready_cards if info(c.name).kind != "spell"]
+        else:
+            ready_cards = [c for c in ready_cards if info(c.name).kind != "spell"]
         if not ready_cards:
             return None
 
@@ -215,6 +235,8 @@ class TacticalReflexPolicy:
                 # Defend against threats
                 if "splash" in tags:
                     score += 25.0  # Wipes swarms
+                if c_info.kind == "spell" and threat_count >= 3:
+                    score += 20.0  # Area spell into a stacked push
                 if "mini_tank" in tags or "tank" in tags:
                     score += 20.0  # Holds front line
                 if "anti_air" in tags or "hits_air" in tags:
@@ -251,7 +273,7 @@ class TacticalReflexPolicy:
                     score += 10.0
 
             elif strategy == "cycle":
-                # Cheapest card in hand
+                # Cheapest troop in hand — spells already filtered out above
                 score += (10.0 - cost) * 5.0
 
             # Prefer cards we can comfortably afford without hitting 0 elixir
@@ -269,18 +291,24 @@ class TacticalReflexPolicy:
         if not squares:
             return None
 
-        # 1. Direct Spells targeting
+        # 1. Spell: only a detected enemy body — never bare tower chip
         c_info = info(card.name)
         if c_info.kind == "spell":
-            # If enemy troops are clustered, strike them
-            for sq in squares:
-                if sq.name.startswith("enemy_"):
-                    return sq
-            # Otherwise hit standing princess tower
-            for sq in squares:
-                if "enemy_tower" in sq.name:
-                    return sq
-            return squares[0]
+            # Troop targets are `enemy_<name>_<lane>_<i>`; towers are `left_enemy_tower` / `enemy_king_tower`.
+            troop_targets = [
+                sq
+                for sq in squares
+                if sq.name.startswith("enemy_") and "tower" not in sq.name
+            ]
+            if not troop_targets:
+                return None
+            # Prefer bodies already on our half / at the bridge (real defend value).
+            on_my_half = [
+                sq
+                for sq in troop_targets
+                if "on your side" in sq.meaning or "at the bridge" in sq.meaning
+            ]
+            return on_my_half[0] if on_my_half else troop_targets[0]
 
         # 2. Defend Centre (golden pull pocket)
         if strategy == "defend_centre":
@@ -571,6 +599,22 @@ class ClashBattleAdapter:
         # TIER 3: SQUARE DEPLOYMENT SELECTION
         chosen_square = self.tactical_policy.select_square(chosen_strategy, chosen_card, state)
         if not chosen_square:
+            # Spell with no enemy body on the board: holding is correct — do not bridge-drop.
+            if info(chosen_card.name).kind == "spell":
+                latency_ms = round((time.time() - t0) * 1000, 2)
+                return {
+                    "action": "wait",
+                    "strategy": chosen_strategy,
+                    "card_name": chosen_card.name,
+                    "card_slot": chosen_card.slot,
+                    "square_name": None,
+                    "threat_score": threat_urgency,
+                    "confidence": confidence,
+                    "latency_ms": latency_ms,
+                    "source": engine_source,
+                    "target_coords": None,
+                    "reasoning": f"Holding {chosen_card.name}: no enemy troop in spell range.",
+                }
             # Fallback to left bridge
             chosen_square = BRIDGE[0]
 

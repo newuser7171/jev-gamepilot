@@ -1,8 +1,10 @@
-"""Regression: Clash tempo planner — opening, rate thresholds, counter-push window."""
+"""Regression: Clash tempo planner, spell gating, counter-push window."""
 import unittest
 
 from adapters.clash_adapter import TacticalReflexPolicy
+from clash_jev.moves import spell_targets
 from clash_jev.state import BattleState, HandCard, LaneView
+from clash_jev.units import Unit
 
 
 def make_state(
@@ -12,6 +14,7 @@ def make_state(
     right=None,
     hand=None,
     seconds_at_full_elixir=0.0,
+    units=None,
 ):
     return BattleState(
         elapsed_s=elapsed_s,
@@ -20,6 +23,7 @@ def make_state(
         left=left or LaneView(),
         right=right or LaneView(),
         seconds_at_full_elixir=seconds_at_full_elixir,
+        units=tuple(units) if units else (),
     )
 
 
@@ -122,6 +126,68 @@ class LeakGuardTests(unittest.TestCase):
         policy = TacticalReflexPolicy()
         strat = policy.evaluate_strategy(make_state(elixir=10, elapsed_s=30.0))
         self.assertIn(strat, ("push_left", "push_right", "build_push"))
+
+
+class SpellGatingTests(unittest.TestCase):
+    """Fireball/arrows must never free-chip on cycle/push or empty-board defend."""
+
+    def setUp(self):
+        self.policy = TacticalReflexPolicy()
+
+    def _hand(self, *names):
+        return [HandCard(i, n, True) for i, n in enumerate(names)]
+
+    def test_cycle_never_picks_spell(self):
+        state = make_state(elixir=8, hand=self._hand("fireball", "spear_goblins"))
+        card = self.policy.select_card("cycle", state)
+        self.assertIsNotNone(card)
+        self.assertNotEqual(card.name, "fireball")
+
+    def test_push_never_picks_spell(self):
+        state = make_state(elixir=8, hand=self._hand("fireball", "giant"))
+        card = self.policy.select_card("push_left", state)
+        self.assertIsNotNone(card)
+        self.assertNotEqual(card.name, "fireball")
+
+    def test_single_threat_defend_skips_spell(self):
+        state = make_state(
+            elixir=8,
+            hand=self._hand("fireball"),
+            left=LaneView(enemy_on_my_side=1),
+        )
+        self.assertIsNone(self.policy.select_card("defend_left", state))
+
+    def test_multi_threat_defend_may_use_spell(self):
+        state = make_state(
+            elixir=8,
+            hand=self._hand("fireball", "knight"),
+            left=LaneView(enemy_on_my_side=2),
+            right=LaneView(enemy_on_my_side=1),
+        )
+        card = self.policy.select_card("defend_centre", state)
+        self.assertIsNotNone(card)
+
+    def test_spell_square_requires_enemy_troop(self):
+        card = HandCard(0, "fireball", True)
+        empty = make_state(elixir=8, hand=[card])
+        squares = spell_targets(card, empty)
+        # No enemy units → only standing towers in the legal set.
+        self.assertFalse(
+            any(sq.name.startswith("enemy_") and "tower" not in sq.name for sq in squares)
+        )
+        self.assertIsNone(self.policy.select_square("defend_left", card, empty))
+
+    def test_spell_square_hits_troop_not_tower(self):
+        card = HandCard(0, "fireball", True)
+        state = make_state(
+            elixir=8,
+            hand=[card],
+            units=(Unit(owner="enemy", x=0.3, y=0.6, health=1.0),),
+        )
+        sq = self.policy.select_square("defend_left", card, state)
+        self.assertIsNotNone(sq)
+        self.assertTrue(sq.name.startswith("enemy_"))
+        self.assertNotIn("tower", sq.name)
 
 
 if __name__ == "__main__":
