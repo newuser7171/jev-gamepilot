@@ -28,7 +28,7 @@ if "%choice%"=="2" (
 ) else if "%choice%"=="3" (
     python phone_pilot.py --profile mobile_fruit_ninja
 ) else if "%choice%"=="4" (
-    python phone_pilot.py --profile mobile_clash_royale
+    python phone_pilot.py --profile mobile_clash_royale --device RFCX91J8LSD
 ) else if "%choice%"=="5" (
     python phone_pilot.py --profile mobile_earntodie2
 ) else if "%choice%"=="6" (
