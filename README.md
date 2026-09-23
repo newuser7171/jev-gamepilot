@@ -25,7 +25,7 @@ Locks onto any running Windows game window or full desktop (Steam, Epic, Battle.
 ### 2. 📱 Phone Game Pilot (`phone_pilot.py` / `run-phone-pilot.bat`)
 Connects directly to an Android phone over USB or Wi-Fi via ADB with zero-latency screen capture and atomic hardware touch injection.
 
-* **Supported Games**: Solar Smash, Subway Surfers, Fruit Ninja, Clash Royale, Earn to Die 2, EA Sports FC / FIFA Mobile, BitLife, Marvel SNAP, Pokémon TCG Pocket, Solitaire, Snake, and Universal Mobile.
+* **Supported Games**: Clash of Clans, Brawl Stars, Solar Smash, Subway Surfers, Fruit Ninja, Clash Royale, Earn to Die 2, EA Sports FC / FIFA Mobile, BitLife, Marvel SNAP, Pokémon TCG Pocket, Solitaire, Snake, and Universal Mobile.
 * **Orientation Awareness**: Dynamically detects Portrait vs Landscape and adjusts bottom drawers, side trays, and target coordinates.
 
 ---
@@ -59,6 +59,8 @@ python phone_pilot.py --profile auto
 python phone_pilot.py --profile mobile_solarsmash
 python phone_pilot.py --profile mobile_solitaire
 python phone_pilot.py --profile mobile_card_battler
+python phone_pilot.py --profile mobile_coc
+python phone_pilot.py --profile mobile_brawlstars
 ```
 
 ---
@@ -73,6 +75,9 @@ jev-gamepilot/
 ├── run-phone-pilot.bat        # Desktop batch launcher for Android phone games
 ├── adapters/
 │   ├── phone_adapter.py       # High-speed ADB frame stream & atomic touch dispatcher
+│   ├── clash_adapter.py       # Clash Royale tactical RTS controller
+│   ├── coc_adapter.py         # Clash of Clans raid spread-deploy controller
+│   ├── brawl_adapter.py       # Brawl Stars joystick/attack match controller
 │   ├── dino_adapter.py        # Specialized Dino runner perception
 │   └── screen_chess_adapter.py# Screen Chess 8x8 detection & board evaluation
 ├── universal_brain.py         # Dual-Tier Consensus: Local Laya (sub-30ms) + TypeSafe Jev

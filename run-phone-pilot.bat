@@ -20,8 +20,10 @@ echo  9. Flappy Bird / One-Tap Arcades (Precision Taps)
 echo 10. Card Games and TCGs (Marvel SNAP, Hearthstone, Pokemon, Balatro)
 echo 11. Solitaire and Classic Card Puzzles (Klondike, Spider, FreeCell)
 echo 12. Snake and Grid Arcades (4-Way Turn Reflexes)
+echo 13. Clash of Clans (Find Match, Spread Deploy, End for Loot)
+echo 14. Brawl Stars (Joystick Move, Aimed Attack, Super)
 echo.
-set /p choice="Select mode [1-12] (default: 1): "
+set /p choice="Select mode [1-14] (default: 1): "
 
 if "%choice%"=="2" (
     python phone_pilot.py --profile runner_3lane
@@ -45,6 +47,10 @@ if "%choice%"=="2" (
     python phone_pilot.py --profile mobile_solitaire
 ) else if "%choice%"=="12" (
     python phone_pilot.py --profile mobile_snake
+) else if "%choice%"=="13" (
+    python phone_pilot.py --profile mobile_coc --device RFCX91J8LSD
+) else if "%choice%"=="14" (
+    python phone_pilot.py --profile mobile_brawlstars --device RFCX91J8LSD
 ) else (
     python phone_pilot.py --profile auto
 )
