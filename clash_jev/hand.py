@@ -61,13 +61,13 @@ _ART = (
 # `teach-deck` overwrites PLAYER_DECK_FILE; player_deck() prefers that file when it has eight names.
 PLAYER_DECK = frozenset(
     {
-        "spear_goblins",
-        "musketeer",
         "giant",
+        "musketeer",
+        "mini_pekka",
+        "knight",
+        "archers",
         "fireball",
         "goblins",
-        "goblin_hut",
-        "mini_pekka",
         "goblin_cage",
     }
 )

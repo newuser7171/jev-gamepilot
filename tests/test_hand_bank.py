@@ -39,11 +39,11 @@ class PlayerDeckTests(unittest.TestCase):
             "fireball",
             "goblins",
             "goblin_cage",
-            "spear_goblins",
-            "goblin_hut",
+            "knight",
+            "archers",
         ):
             self.assertIn(card, PLAYER_DECK)
-        for card in ("archers", "mega_minion"):
+        for card in ("spear_goblins", "goblin_hut", "mega_minion"):
             self.assertNotIn(card, PLAYER_DECK)
 
     def test_player_deck_prefers_eight_name_file(self):
