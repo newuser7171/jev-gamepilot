@@ -43,7 +43,15 @@ from clash_jev.perception import Perception, Layout
 from clash_jev.screenmap import REFERENCE, ScreenMap
 from clash_jev.units import Unit, find_units
 from clash_jev.troops import TroopClassifier
-from clash_jev.hand import HandReader, HAND_TAP_POINTS
+from clash_jev.hand import HandReader, HAND_TAP_POINTS, CatalogBank, _slot_box, _is_empty, player_deck
+from clash_jev.learn import (
+    SelfImprover,
+    TuneParams,
+    crowns_from_results_frame,
+    crowns_from_towers,
+    outcome_from_crowns,
+    teach_with_canaries,
+)
 
 
 class ClashCoordinateMapper:
@@ -100,7 +108,7 @@ class TacticalReflexPolicy:
     Used when local/cloud AI models are offline, under high latency, or as consensus fallback.
     """
 
-    def __init__(self):
+    def __init__(self, tune: Optional[TuneParams] = None):
         self._push_counter = 0
         # Dedicated lane alternator for the cycle/default square fallback —
         # evaluate_strategy's push paths share _push_counter and would skew
@@ -108,16 +116,30 @@ class TacticalReflexPolicy:
         self._cycle_lane = 0
         # elapsed_s of last real defend decision — feeds counter-push window
         self._last_defend_elapsed = -999.0
+        # Bounded self-improvement knobs (defaults = hand-tuned behaviour).
+        self.tune: TuneParams = tune or TuneParams()
+        # Set by evaluate_strategy when the opponent-elixir gate returned this call.
+        self._gate_fired = False
 
     @staticmethod
-    def tempo_thresholds(state: BattleState) -> Tuple[int, int]:
-        """(save_below, push_at) by elixir rate. Opening handled separately."""
+    def tempo_thresholds(state: BattleState, tune: Optional[TuneParams] = None) -> Tuple[int, int]:
+        """(save_below, push_at) by elixir rate. Opening handled separately.
+
+        `tune` applies integer offsets from the self-improvement grid; the public
+        two-arg call used by tests and external probes stays at the defaults.
+        """
         rate = state.elixir_rate
         if rate == "double":
-            return 3, 6
-        if rate == "triple":
-            return 2, 5
-        return 5, 8
+            base_save, base_push = 3, 6
+        elif rate == "triple":
+            base_save, base_push = 2, 5
+        else:
+            base_save, base_push = 5, 8
+        if tune is None:
+            return base_save, base_push
+        save_below = max(1, base_save + tune.save_offset)
+        push_at = max(save_below + 1, base_push + tune.push_offset)
+        return save_below, push_at
 
     @staticmethod
     def _tower_hp(v: Optional[float]) -> float:
@@ -159,7 +181,8 @@ class TacticalReflexPolicy:
         return "push_left" if (self._push_counter % 2 == 0) else "push_right"
 
     def evaluate_strategy(self, state: BattleState, threat_urgency: float = 0.0) -> str:
-        save_below, push_at = self.tempo_thresholds(state)
+        self._gate_fired = False
+        save_below, push_at = self.tempo_thresholds(state, self.tune)
         opening = state.elapsed_s < 12.0
         endgame = self._is_endgame(state)
         behind = self._behind(state) if endgame else False
@@ -224,16 +247,18 @@ class TacticalReflexPolicy:
         # when we have no board presence to convert. Hold/cycle until they spend.
         # Endgame while behind: the clock is the bigger threat — bypass the gate.
         enemy_e = state.enemy_elixir_estimate
+        gate_at = self.tune.enemy_gate_at
         if (
             not (endgame and behind)
             and enemy_e is not None
-            and enemy_e >= 7.0
+            and enemy_e >= gate_at
             and state.elixir <= enemy_e - 3.0
             and state.left.mine_on_my_side == 0
             and state.left.mine_at_bridge == 0
             and state.right.mine_on_my_side == 0
             and state.right.mine_at_bridge == 0
         ):
+            self._gate_fired = True
             if state.elixir < save_below:
                 return "save_elixir"
             return "cycle"
@@ -511,8 +536,11 @@ class ClashBattleAdapter:
     def __init__(self, screen_width: int = 1080, screen_height: int = 2340):
         self.mapper = ClashCoordinateMapper(screen_width, screen_height)
         self.perception = Perception()
-        self.tactical_policy = TacticalReflexPolicy()
+        self.learner = SelfImprover()
+        self.tactical_policy = TacticalReflexPolicy(tune=self.learner.params)
         self.start_time = time.time()
+        self._last_state: Optional[BattleState] = None
+        self._catalog: Optional[CatalogBank] = None
 
         # Try initializing Jev TypeSafe client
         self.jev_client = None
@@ -546,9 +574,93 @@ class ClashBattleAdapter:
         """
         self.start_time = time.time()
         self._push_counter = 0
+        self._last_state = None
+        self.learner.note_battle_start()
         if self.tactical_policy is not None:
+            self.tactical_policy.tune = self.learner.params
             self.tactical_policy._last_defend_elapsed = -999.0
             self.tactical_policy._push_counter = 0
+
+    def note_battle_end(self, frame_bgr: Optional[np.ndarray] = None) -> Optional[dict]:
+        """Journal one finished match and maybe retune. Idempotent while battle is closed.
+
+        Outcome preference: post-game crown banners, then tower HP from the last
+        in-battle state. No signal → aborted (never pollutes the bandit).
+        """
+        if not self.learner.battle_open:
+            return None
+        state = self._last_state
+        crowns = crowns_from_results_frame(frame_bgr)
+        if crowns is None and state is not None:
+            crowns = crowns_from_towers(state.towers)
+            # All standing and no results screen: unread, not a draw.
+            if crowns == (0, 0) and all(
+                v is None or float(v) > 0.0
+                for v in (
+                    state.towers.enemy_left,
+                    state.towers.enemy_right,
+                    state.towers.my_left,
+                    state.towers.my_right,
+                )
+            ):
+                # Still score from towers if anything was destroyed by kings; else abort.
+                king_down = any(
+                    v is not None and float(v) <= 0.0
+                    for v in (state.towers.enemy_king, state.towers.my_king)
+                )
+                if not king_down:
+                    crowns = None
+        if crowns is None:
+            outcome = "aborted"
+            crowns_out = (0, 0)
+            elapsed = state.elapsed_s if state else time.time() - self.start_time
+            behind = False
+        else:
+            outcome = outcome_from_crowns(crowns)
+            crowns_out = crowns
+            elapsed = state.elapsed_s if state else time.time() - self.start_time
+            behind = self.tactical_policy._behind(state) if state else False
+        rec = self.learner.note_battle_end(outcome, crowns_out, elapsed, behind=behind)
+        if self.tactical_policy is not None:
+            self.tactical_policy.tune = self.learner.params
+        return rec.as_dict() if rec else None
+
+    def _auto_teach_unknown(self, device_frame: np.ndarray, ref: np.ndarray, hand_cards) -> None:
+        """Confident catalog ids on unknown, non-empty slots streak into a canary teach."""
+        if not self.learner.battle_open:
+            return
+        unknown = [c for c in hand_cards if c.name == "unknown"]
+        if not unknown:
+            return
+        if self._catalog is None:
+            try:
+                self._catalog = CatalogBank()
+            except Exception:
+                return
+        deck = player_deck()
+        for card in unknown:
+            if _is_empty(ref, card.slot):
+                continue
+            box = _slot_box(card.slot)
+            try:
+                catalog_name, score, lead = self._catalog.match(ref, box)
+            except Exception:
+                continue
+            outcome = self.learner.observe_hand(
+                card.slot,
+                card.name,
+                catalog_name,
+                score,
+                lead,
+                in_player_deck=bool(catalog_name and catalog_name in deck),
+                teach_fn=lambda name, slot=card.slot: teach_with_canaries(device_frame, slot, name),
+            )
+            if outcome in ("added", "replaced"):
+                # New exemplar on disk — next HandReader load picks it up.
+                try:
+                    self.perception.hand_reader = HandReader()
+                except Exception:
+                    pass
 
     def extract_state_from_frame(
         self,
@@ -629,8 +741,14 @@ class ClashBattleAdapter:
             hand_cards = []
             for slot in range(4):
                 hand_cards.append(HandCard(slot=slot, name="unknown", ready=(elixir >= 3)))
+        elif any(c.name == "unknown" for c in hand_cards):
+            # Live bank gap → streak into a canary-guarded teach (raw device frame).
+            try:
+                self._auto_teach_unknown(frame_bgr, ref, hand_cards)
+            except Exception:
+                pass
 
-        return BattleState(
+        state = BattleState(
             elapsed_s=elapsed,
             elixir=elixir,
             hand=tuple(hand_cards),
@@ -641,6 +759,19 @@ class ClashBattleAdapter:
             enemy_elixir_estimate=enemy_elixir,
             snapshot_interval_s=1.0,
             seconds_at_full_elixir=0.5 if elixir >= 10 else 0.0,
+        )
+        self._last_state = state
+        return state
+
+    def _observe(self, state: BattleState, strategy: str, action: str) -> None:
+        if not self.learner.battle_open:
+            return
+        self.learner.observe_decision(
+            strategy=strategy,
+            elixir=state.elixir,
+            action=action,
+            enemy_gate_fired=self.tactical_policy._gate_fired,
+            behind=self.tactical_policy._behind(state),
         )
 
     def decide(
@@ -659,6 +790,7 @@ class ClashBattleAdapter:
         """
         t0 = time.time()
         state = self.extract_state_from_frame(frame_bgr, cached_elixir=current_elixir, threats=threats)
+        self.tactical_policy._gate_fired = False
 
         # TIER 1: STRATEGY FORMULATION
         chosen_strategy = None
@@ -712,7 +844,7 @@ class ClashBattleAdapter:
                 chosen_strategy = self.tactical_policy.evaluate_strategy(state, threat_urgency=threat_urgency)
                 engine_source = "tactical_reflex"
                 confidence = 0.94
-            elif chosen_strategy in NO_PLAY and state.elixir >= self.tactical_policy.tempo_thresholds(state)[1]:
+            elif chosen_strategy in NO_PLAY and state.elixir >= self.tactical_policy.tempo_thresholds(state, self.tactical_policy.tune)[1]:
                 # Tempo says spend (double/triple push_at) but Jev said hold.
                 chosen_strategy = self.tactical_policy.evaluate_strategy(state, threat_urgency=threat_urgency)
                 engine_source = "tactical_reflex"
@@ -721,6 +853,7 @@ class ClashBattleAdapter:
         # Check for NO_PLAY strategies (holding/saving elixir)
         if chosen_strategy in NO_PLAY:
             latency_ms = round((time.time() - t0) * 1000, 2)
+            self._observe(state, chosen_strategy, "wait")
             return {
                 "action": "wait",
                 "strategy": chosen_strategy,
@@ -739,6 +872,7 @@ class ClashBattleAdapter:
         chosen_card = self.tactical_policy.select_card(chosen_strategy, state)
         if not chosen_card:
             latency_ms = round((time.time() - t0) * 1000, 2)
+            self._observe(state, chosen_strategy, "wait")
             return {
                 "action": "wait",
                 "strategy": chosen_strategy,
@@ -759,6 +893,7 @@ class ClashBattleAdapter:
             # Spell with no enemy body on the board: holding is correct — do not bridge-drop.
             if info(chosen_card.name).kind == "spell":
                 latency_ms = round((time.time() - t0) * 1000, 2)
+                self._observe(state, chosen_strategy, "wait")
                 return {
                     "action": "wait",
                     "strategy": chosen_strategy,
@@ -782,6 +917,7 @@ class ClashBattleAdapter:
 
         latency_ms = round((time.time() - t0) * 1000, 2)
         card_display = chosen_card.name.replace("_", " ").title()
+        self._observe(state, chosen_strategy, "deploy_clash_card")
 
         return {
             "action": "deploy_clash_card",

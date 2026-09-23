@@ -6,3 +6,5 @@ scratch/
 *.log
 *.png
 *.jpg
+clash_jev/battle_journal.jsonl
+clash_jev/tuned_params.json

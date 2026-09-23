@@ -734,6 +734,8 @@ class UniversalBrain:
         if profile.id == "mobile_clash_royale":
             phase = getattr(scene, "game_phase", "")
             if phase == "matchmaking":
+                if self.clash_adapter is not None and self.clash_adapter.learner.battle_open:
+                    self.clash_adapter.note_battle_end(None)
                 self._clash_was_in_battle = False
                 self._clash_battle_clock_armed = False
                 return {
@@ -745,6 +747,8 @@ class UniversalBrain:
                     "target_coords": None,
                 }
             if phase == "main_menu":
+                if self.clash_adapter is not None and self.clash_adapter.learner.battle_open:
+                    self.clash_adapter.note_battle_end(getattr(scene, "raw_frame", None))
                 self._clash_was_in_battle = False
                 self._clash_battle_clock_armed = False
                 return {
@@ -756,6 +760,9 @@ class UniversalBrain:
                     "target_coords": None,
                 }
             elif phase == "game_over":
+                # Journal + maybe retune BEFORE clearing the battle flags.
+                if self.clash_adapter is not None and self.clash_adapter.learner.battle_open:
+                    self.clash_adapter.note_battle_end(getattr(scene, "raw_frame", None))
                 self._clash_was_in_battle = False
                 self._clash_battle_clock_armed = False
                 return {
