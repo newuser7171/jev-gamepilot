@@ -915,10 +915,14 @@ class AdbController:
         elif "start_battle" in act:
             # Tap yellow Battle button on main menu
             self.tap(int(self.screen_width * 0.505), int(self.screen_height * 0.814))
-        elif "confirm_ok" in act or "open_chest" in act:
-            # Tap OK button or center to dismiss post-game screen or collect rewards
-            self.tap(int(self.screen_width * 0.50), int(self.screen_height * 0.83))
+        elif "confirm_ok" in act:
+            # Winner screen: blue OK is the right button of the Play Again pair
+            # (measured center 707,1997 → 0.655, 0.854). Old (0.50,0.83) hit the gap.
+            self.tap(int(self.screen_width * 0.655), int(self.screen_height * 0.854))
+        elif "open_chest" in act:
+            # Chest/reward overlays: center dismiss, then low-center confirm row.
             self.tap(int(self.screen_width * 0.50), int(self.screen_height * 0.50))
+            self.tap(int(self.screen_width * 0.50), int(self.screen_height * 0.83))
         elif "deploy_clash" in act or "deploy_defense_center" in act or "deploy_card_left" in act or "deploy_card_right" in act or "deploy_spell_center" in act:
             if target_coords and len(target_coords) == 4:
                 card_x, card_y, target_x, target_y = target_coords

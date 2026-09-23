@@ -328,14 +328,57 @@ class UniversalVision:
                     dark_gaps += 1
             card_hand_present = cards_ok >= 3 and dark_gaps >= 2
 
-            # Phase priority with hysteresis: matchmaking > battle HUD > game_over > menu.
+            # Winner screen: gold Play Again (left) + blue OK (right) sit at
+            # y≈0.83–0.88 as two large siblings (~24k/30k px). Bottom-nav icons
+            # light card_hand_present there, so this pair must outrank the HUD.
+            # Deck chrome / menu Battle button only produce one large blob (or
+            # two small ones) — require both CCs >= 12k and on the same row.
+            post_band = frame_bgr[int(h * 0.80) : int(h * 0.92), :]
+            gold_left = post_band[:, : int(w * 0.50)]
+            blue_right = post_band[:, int(w * 0.50) :]
+            post_gold = (
+                (gold_left[:, :, 2] > 160)
+                & (gold_left[:, :, 1] > 130)
+                & (gold_left[:, :, 0] < 140)
+                & (gold_left[:, :, 2] > gold_left[:, :, 0] + 40)
+            ).astype(np.uint8)
+            post_blue = (
+                (blue_right[:, :, 0] > 160)
+                & (blue_right[:, :, 0] > blue_right[:, :, 2] + 50)
+                & (blue_right[:, :, 1] > 90)
+                & (blue_right[:, :, 1] < 210)
+            ).astype(np.uint8)
+
+            def _post_btn_cc(mask, x_off):
+                n, _, st, _ = cv2.connectedComponentsWithStats(mask, 8)
+                if n <= 1:
+                    return None
+                i = 1 + int(np.argmax(st[1:, 4]))
+                x, y, bw, bh, area = st[i]
+                if int(area) < 12000 or int(bw) < 160 or int(bh) < 70:
+                    return None
+                return (x_off + x + bw * 0.5, y + bh * 0.5, int(area))
+
+            gold_cc = _post_btn_cc(post_gold, 0)
+            blue_cc = _post_btn_cc(post_blue, int(w * 0.50))
+            post_ok_pair = bool(
+                gold_cc
+                and blue_cc
+                and gold_cc[0] < blue_cc[0]
+                and abs(gold_cc[1] - blue_cc[1]) < 0.035 * h
+            )
+
+            # Phase priority with hysteresis: matchmaking > game_over > battle HUD > menu.
             # Mid-battle false menu (turf/button) was resetting the match clock every few frames.
             raw_phase = ""
             if red_cancel.sum() > 800:
                 raw_phase = "matchmaking"
+            elif post_ok_pair:
+                raw_phase = "game_over"
             elif elixir_bar or card_hand_present:
                 raw_phase = "in_battle"
             else:
+                # Legacy fallback: broad blue band above the buttons (older layouts).
                 ok_region = frame_bgr[int(h * 0.60) : int(h * 0.78), int(w * 0.28) : int(w * 0.72)]
                 blue_pixels = (ok_region[:, :, 0] > 180) & (ok_region[:, :, 2] < 100) & (ok_region[:, :, 1] < 160)
                 blue_n = int(blue_pixels.sum())
