@@ -200,6 +200,10 @@ class PhoneGamePilot:
                     max_idle = 1.10  # Active slide/jump to maintain momentum
                 elif "clash" in self.profile.id:
                     max_idle = 2.20  # Elixir pacing
+                elif self.profile.id == "mobile_coc":
+                    max_idle = 1.60  # Deploy cadence / search wait
+                elif self.profile.id == "mobile_brawlstars":
+                    max_idle = 0.40  # Joystick roam must stay hot
                 elif "solitaire" in self.profile.id:
                     max_idle = 0.95  # Fast continuous puzzle cadence
                 elif "card" in self.profile.id:
@@ -305,6 +309,10 @@ class PhoneGamePilot:
 
                 if "clash" in self.profile.id and action_name != "start_battle":
                     cooldown = 1.8  # defend/attack taps need elixir+deploy-time gap
+                elif self.profile.id == "mobile_coc" and action_name != "find_match":
+                    cooldown = 0.55  # slot→target double-tap rhythm
+                elif self.profile.id == "mobile_brawlstars":
+                    cooldown = 0.30  # attack cooldown ~0.85s handled in adapter; floor here
                 elif "card" in self.profile.id:
                     cooldown = 0.65
                 elif "8ball" in self.profile.id or "pool" in self.profile.id:

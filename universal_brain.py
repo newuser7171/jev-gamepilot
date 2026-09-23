@@ -57,6 +57,20 @@ try:
 except Exception:
     pass
 
+_COC_ADAPTER_AVAILABLE = False
+try:
+    from adapters.coc_adapter import CocRaidAdapter, detect_coc_phase
+    _COC_ADAPTER_AVAILABLE = True
+except Exception:
+    detect_coc_phase = None
+
+_BRAWL_ADAPTER_AVAILABLE = False
+try:
+    from adapters.brawl_adapter import BrawlMatchAdapter, detect_brawl_phase
+    _BRAWL_ADAPTER_AVAILABLE = True
+except Exception:
+    detect_brawl_phase = None
+
 
 class UniversalBrain:
     def __init__(self, model_name: str = "jev-latest"):
@@ -72,6 +86,8 @@ class UniversalBrain:
         self.laya_loading = False
         self._laya_tried = False
         self.clash_adapter = ClashBattleAdapter() if _CLASH_ADAPTER_AVAILABLE else None
+        self.coc_adapter = CocRaidAdapter() if _COC_ADAPTER_AVAILABLE else None
+        self.brawl_adapter = BrawlMatchAdapter() if _BRAWL_ADAPTER_AVAILABLE else None
 
         self.last_decision: Dict[str, Any] = {
             "action": "wait",
@@ -839,6 +855,137 @@ class UniversalBrain:
                         "source": "rts_defense_reflex",
                         "target_coords": None,
                     }
+
+        # 2b. Clash of Clans raid reflex
+        if profile.id == "mobile_coc":
+            phase = getattr(scene, "game_phase", "")
+            if phase == "main_menu" or phase == "home_village":
+                if self.coc_adapter is not None and self.coc_adapter.raid_open:
+                    self.coc_adapter.note_raid_end(getattr(scene, "raw_frame", None))
+                self._coc_was_raiding = False
+                return {
+                    "action": "find_match",
+                    "threat_score": 0.0,
+                    "confidence": 0.99,
+                    "latency_ms": 0.2,
+                    "source": "coc_find_match",
+                    "target_coords": None,
+                }
+            if phase == "attack_search":
+                if self.coc_adapter is not None and self.coc_adapter.raid_open:
+                    self.coc_adapter.note_raid_end(getattr(scene, "raw_frame", None))
+                self._coc_was_raiding = False
+                return {
+                    "action": "wait",
+                    "threat_score": 0.0,
+                    "confidence": 0.99,
+                    "latency_ms": 0.2,
+                    "source": "coc_search_standby",
+                    "target_coords": None,
+                }
+            if phase == "results":
+                if self.coc_adapter is not None and self.coc_adapter.raid_open:
+                    self.coc_adapter.note_raid_end(getattr(scene, "raw_frame", None))
+                self._coc_was_raiding = False
+                return {
+                    "action": "confirm_ok",
+                    "threat_score": 0.0,
+                    "confidence": 0.99,
+                    "latency_ms": 0.2,
+                    "source": "coc_loot_dismiss",
+                    "target_coords": None,
+                }
+            # in_raid (or sticky battle evidence)
+            if self.coc_adapter is not None:
+                if not getattr(self, "_coc_was_raiding", False):
+                    self._coc_was_raiding = True
+                    if not self.coc_adapter.raid_open:
+                        self.coc_adapter.note_raid_start()
+                raw_frame = getattr(scene, "raw_frame", None)
+                if raw_frame is not None:
+                    hh, ww = raw_frame.shape[:2]
+                    self.coc_adapter.update_resolution(ww, hh)
+                else:
+                    raw_frame = np.zeros((2340, 1080, 3), dtype=np.uint8)
+                decision = self.coc_adapter.decide(
+                    raw_frame,
+                    threat_urgency=scene.threat_urgency,
+                    phase=getattr(scene, "coc_phase", "") or phase or "in_raid",
+                )
+                return decision
+            return {
+                "action": "wait",
+                "threat_score": 0.0,
+                "confidence": 0.5,
+                "latency_ms": 0.2,
+                "source": "coc_adapter_missing",
+                "target_coords": None,
+            }
+
+        # 2c. Brawl Stars match reflex
+        if profile.id == "mobile_brawlstars":
+            phase = getattr(scene, "game_phase", "")
+            if phase == "main_menu" or phase == "menu":
+                if self.brawl_adapter is not None and self.brawl_adapter.match_open:
+                    self.brawl_adapter.note_match_end(getattr(scene, "raw_frame", None))
+                self._brawl_was_in_match = False
+                return {
+                    "action": "start_battle",
+                    "threat_score": 0.0,
+                    "confidence": 0.99,
+                    "latency_ms": 0.2,
+                    "source": "brawl_queue",
+                    "target_coords": None,
+                }
+            if phase == "matchmaking":
+                if self.brawl_adapter is not None and self.brawl_adapter.match_open:
+                    self.brawl_adapter.note_match_end(getattr(scene, "raw_frame", None))
+                self._brawl_was_in_match = False
+                return {
+                    "action": "wait",
+                    "threat_score": 0.0,
+                    "confidence": 0.99,
+                    "latency_ms": 0.2,
+                    "source": "brawl_matchmaking_standby",
+                    "target_coords": None,
+                }
+            if phase == "results":
+                if self.brawl_adapter is not None and self.brawl_adapter.match_open:
+                    self.brawl_adapter.note_match_end(getattr(scene, "raw_frame", None))
+                self._brawl_was_in_match = False
+                return {
+                    "action": "confirm_ok",
+                    "threat_score": 0.0,
+                    "confidence": 0.99,
+                    "latency_ms": 0.2,
+                    "source": "brawl_results_dismiss",
+                    "target_coords": None,
+                }
+            if self.brawl_adapter is not None:
+                if not getattr(self, "_brawl_was_in_match", False):
+                    self._brawl_was_in_match = True
+                    if not self.brawl_adapter.match_open:
+                        self.brawl_adapter.note_match_start()
+                raw_frame = getattr(scene, "raw_frame", None)
+                if raw_frame is not None:
+                    hh, ww = raw_frame.shape[:2]
+                    self.brawl_adapter.update_resolution(ww, hh)
+                else:
+                    raw_frame = np.zeros((1080, 2340, 3), dtype=np.uint8)
+                decision = self.brawl_adapter.decide(
+                    raw_frame,
+                    threat_urgency=scene.threat_urgency,
+                    phase=getattr(scene, "brawl_phase", "") or phase or "in_match",
+                )
+                return decision
+            return {
+                "action": "wait",
+                "threat_score": 0.0,
+                "confidence": 0.5,
+                "latency_ms": 0.2,
+                "source": "brawl_adapter_missing",
+                "target_coords": None,
+            }
 
         # 3. Earn to Die 2 / 2D Vehicle Driver
         if profile.id == "mobile_earntodie2":

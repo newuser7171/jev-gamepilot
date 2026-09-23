@@ -1067,6 +1067,20 @@ class GamePilotHUD(ctk.CTk):
                 ("💥 Spell Tower", "cast_spell_enemy_tower"),
                 ("🔄 Start Battle", "start_battle"),
             ]
+        elif prof_id == "mobile_coc":
+            shortcuts = [
+                ("⚔️ Find Match", "find_match"),
+                ("🗡️ Deploy Troop", "deploy_troop"),
+                ("🏳️ End Battle", "end_battle"),
+                ("✅ Confirm OK", "confirm_ok"),
+            ]
+        elif prof_id == "mobile_brawlstars":
+            shortcuts = [
+                ("🎮 Move", "move_to"),
+                ("🔫 Attack", "attack"),
+                ("⚡ Super", "use_super"),
+                ("▶️ Play", "start_battle"),
+            ]
         elif prof_id == "runner_3lane":
             shortcuts = [
                 ("⬅️ Dodge Left", "swipe_left"),

@@ -31,6 +31,8 @@ PACKAGE_PROFILE_MAP = {
     "com.halfbrick.fruitninjafree": "mobile_fruit_ninja",
     "com.notdoppler.earntodie2": "mobile_earntodie2",
     "com.supercell.clashroyale": "mobile_clash_royale",
+    "com.supercell.clashofclans": "mobile_coc",
+    "com.supercell.brawlstars": "mobile_brawlstars",
     "com.ea.gp.fifamobile": "mobile_fifa",
     "com.paradyme.solarsmash": "mobile_solarsmash",
     "com.candywriter.bitlife": "mobile_bitlife",
@@ -177,7 +179,11 @@ class AdbController:
             return "flappy_tap", pkg
         elif "drive" in pkg_lower or "hill" in pkg_lower or "race" in pkg_lower or "car" in pkg_lower:
             return "mobile_earntodie2", pkg
-        elif "clash" in pkg_lower or "royale" in pkg_lower or "arena" in pkg_lower or "brawl" in pkg_lower or "tower" in pkg_lower:
+        elif "brawlstars" in pkg_lower or "brawl" in pkg_lower:
+            return "mobile_brawlstars", pkg
+        elif "clashofclans" in pkg_lower or "ofclans" in pkg_lower:
+            return "mobile_coc", pkg
+        elif "clash" in pkg_lower or "royale" in pkg_lower or "arena" in pkg_lower or "tower" in pkg_lower:
             return "mobile_clash_royale", pkg
         elif "fifa" in pkg_lower or "football" in pkg_lower or "soccer" in pkg_lower or "nba" in pkg_lower or "pes" in pkg_lower:
             return "mobile_fifa", pkg
@@ -912,6 +918,36 @@ class AdbController:
             self.tap(cx, cy)
 
         # 5. Clash Royale / RTS card deployment & auto-match queue
+        elif "find_match" in act:
+            # CoC home: big orange Attack button (bottom-right quadrant)
+            self.tap(int(self.screen_width * 0.78), int(self.screen_height * 0.76))
+        elif "deploy_troop" in act:
+            # CoC: 4-tuple (slot_x, slot_y, target_x, target_y) select then place
+            if target_coords and len(target_coords) == 4:
+                sx, sy, tx, ty = target_coords
+                self.tap(int(sx), int(sy))
+                self.tap(int(tx), int(ty))
+            else:
+                self.tap(int(self.screen_width * 0.50), int(self.screen_height * 0.50))
+        elif "end_battle" in act:
+            # CoC raid: End Battle button top-left → confirm dialog center
+            self.tap(int(self.screen_width * 0.10), int(self.screen_height * 0.08))
+            self.tap(int(self.screen_width * 0.50), int(self.screen_height * 0.62))
+        elif "move_to" in act and len(target_coords or ()) == 4:
+            # Brawl: drag left stick base → target
+            jx, jy, tx, ty = target_coords
+            self.swipe(int(jx), int(jy), int(tx), int(ty), duration_ms=280)
+        elif "use_super" in act:
+            # Brawl super button (bottom-right cluster)
+            if target_coords and len(target_coords) >= 2:
+                self.tap(int(target_coords[0]), int(target_coords[1]))
+            else:
+                self.tap(int(self.screen_width * 0.78), int(self.screen_height * 0.88))
+        elif "attack" in act and len(target_coords or ()) >= 6:
+            # Brawl aimed attack: (jx, jy, ex, ey, ax, ay) — flick aim then tap fire
+            jx, jy, ex, ey, ax, ay = target_coords[:6]
+            self.swipe(int(jx), int(jy), int(ex), int(ey), duration_ms=120)
+            self.tap(int(ax), int(ay))
         elif "start_battle" in act:
             # Tap yellow Battle button on main menu
             self.tap(int(self.screen_width * 0.505), int(self.screen_height * 0.814))

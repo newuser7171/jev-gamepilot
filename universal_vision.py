@@ -408,39 +408,75 @@ class UniversalVision:
             elif scene.game_phase == "main_menu":
                 scene.recommended_action = "start_battle"
 
-            # Specialized Clash Royale RTS Perception (Enemy Unit Health Bar Detection)
-            if scene.game_phase == "in_battle":
-                # Our half only (below the river) — y grows downward on portrait.
-                friendly_y1 = int(h * 0.55)
-                friendly_y2 = int(h * 0.77)
-                friendly_zone = frame_bgr[friendly_y1:friendly_y2, :]
+        # 4b. Clash of Clans phase classification
+        elif profile.id == "mobile_coc":
+            from adapters.coc_adapter import detect_coc_phase
 
-                # Enemy invader health bars: saturated crimson, wide enough to be a bar
-                # not a stray pixel from effects/tower trim.
-                enemy_red_mask = (friendly_zone[:, :, 2] > 180) & (friendly_zone[:, :, 1] < 75) & (friendly_zone[:, :, 0] < 75)
-                red_count = int(enemy_red_mask.sum())
-                if red_count > 120:
-                    ry, rx = np.where(enemy_red_mask)
-                    invader_x = int(np.median(rx))
-                    invader_y = int(np.median(ry)) + friendly_y1
-                    real_threat = UniversalEntity(
-                        x=invader_x - 30,
-                        y=invader_y - 20,
-                        w=60,
-                        h=40,
-                        entity_type="threat",
-                        confidence=0.96,
-                        distance_to_player=math.hypot(invader_x - 540, invader_y - 1720),
-                        click_x=invader_x,
-                        click_y=invader_y,
-                    )
-                    scene.threats = [real_threat]
-                    scene.nearest_threat = real_threat
-                    scene.threat_urgency = 0.85
-                else:
-                    scene.threats = []
-                    scene.nearest_threat = None
-                    scene.threat_urgency = 0.0
+            raw = detect_coc_phase(frame_bgr)
+            # Reuse CR hysteresis: stick in_raid until sustained non-raid evidence.
+            phase_map = {
+                "home_village": "main_menu",
+                "attack_search": "matchmaking",
+                "results": "game_over",
+                "in_raid": "in_battle",
+                "unknown": "",
+            }
+            scene.game_phase = self.apply_clash_phase_hysteresis(phase_map.get(raw, ""))
+            # Expose the fine-grained CoC label for the adapter (phase_map collapses it).
+            scene.coc_phase = raw
+            if scene.game_phase == "game_over":
+                scene.recommended_action = "confirm_ok"
+            elif scene.game_phase == "main_menu":
+                scene.recommended_action = "find_match"
+
+        # 4c. Brawl Stars phase classification
+        elif profile.id == "mobile_brawlstars":
+            from adapters.brawl_adapter import detect_brawl_phase
+
+            raw = detect_brawl_phase(frame_bgr)
+            phase_map = {
+                "menu": "main_menu",
+                "matchmaking": "matchmaking",
+                "results": "game_over",
+                "in_match": "in_battle",
+                "unknown": "",
+            }
+            scene.game_phase = self.apply_clash_phase_hysteresis(phase_map.get(raw, ""))
+            scene.brawl_phase = raw
+            if scene.game_phase == "game_over":
+                scene.recommended_action = "confirm_ok"
+            elif scene.game_phase == "main_menu":
+                scene.recommended_action = "start_battle"
+
+        # Specialized Clash Royale RTS Perception (Enemy Unit Health Bar Detection)
+        if profile.id == "mobile_clash_royale" and scene.game_phase == "in_battle":
+            # Our half only (below the river) — y grows downward on portrait.
+            friendly_y1 = int(h * 0.55)
+            friendly_y2 = int(h * 0.77)
+            friendly_zone = frame_bgr[friendly_y1:friendly_y2, :]
+
+            # Enemy invader health bars: saturated crimson, wide enough to be a bar
+            # not a stray pixel from effects/tower trim.
+            enemy_red_mask = (friendly_zone[:, :, 2] > 180) & (friendly_zone[:, :, 1] < 75) & (friendly_zone[:, :, 0] < 75)
+            red_count = int(enemy_red_mask.sum())
+            if red_count > 120:
+                ry, rx = np.where(enemy_red_mask)
+                invader_x = int(np.median(rx))
+                invader_y = int(np.median(ry)) + friendly_y1
+                real_threat = UniversalEntity(
+                    x=invader_x - 30,
+                    y=invader_y - 20,
+                    w=60,
+                    h=40,
+                    entity_type="threat",
+                    confidence=0.96,
+                    distance_to_player=math.hypot(invader_x - 540, invader_y - 1720),
+                    click_x=invader_x,
+                    click_y=invader_y,
+                )
+                scene.threats = [real_threat]
+                scene.nearest_threat = real_threat
+                scene.threat_urgency = 0.85
             else:
                 scene.threats = []
                 scene.nearest_threat = None
