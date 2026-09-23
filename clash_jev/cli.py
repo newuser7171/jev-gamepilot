@@ -1,4 +1,4 @@
-"""clash-jev serve | snap | play | add-card | label | train | publish"""
+"""clash-jev serve | snap | play | add-card | teach-deck | label | train | publish"""
 
 import argparse
 import os
@@ -55,6 +55,7 @@ def snap(frame, out: Path) -> None:
         if card.name == "unknown":
             print(
                 f"  slot {card.slot + 1} is not recognised — teach it: clash-jev add-card <card_id> --slot {card.slot + 1}"
+                "  (whole loadout: open Battle Deck, then clash-jev teach-deck)"
             )
     print("left :", state.left)
     print("right:", state.right)
@@ -67,9 +68,14 @@ def snap(frame, out: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="clash-jev")
-    parser.add_argument("command", choices=["serve", "snap", "play", "add-card", "label", "train", "publish"])
     parser.add_argument(
-        "name", nargs="?", help="add-card: the card id, e.g. evo_valkyrie; publish: the run's .jsonl"
+        "command",
+        choices=["serve", "snap", "play", "add-card", "teach-deck", "label", "train", "publish"],
+    )
+    parser.add_argument(
+        "name",
+        nargs="?",
+        help="add-card: the card id, e.g. evo_valkyrie; publish: the run's .jsonl",
     )
     parser.add_argument("--slot", type=int, help="add-card: hand slot 1-4 holding that card")
     parser.add_argument("--serial", help="adb device serial (adb devices)")
@@ -154,6 +160,26 @@ def main() -> None:
             print(f"Learned {args.name} from slot {args.slot} (rotated out the oldest exemplar).")
         else:
             print(f"Learned {args.name} from slot {args.slot}.")
+        return
+
+    if args.command == "teach-deck":
+        from clash_jev.hand import teach_deck
+
+        frame = cv2.imread(args.image) if args.image else AdbDevice(args.serial).frame()
+        if frame is None:
+            sys.exit(f"Could not read {args.image or 'device screen'}")
+        report = teach_deck(frame)
+        for line in report["outcomes"]:
+            print(f"  {line}")
+        if report["complete"]:
+            print("player deck saved:", ", ".join(sorted(report["player_deck"])))
+        else:
+            missing = [i + 1 for i, n in enumerate(report["names"]) if not n]
+            sys.exit(
+                "deck not fully read — slots "
+                + ", ".join(str(i) for i in missing)
+                + " unknown. Open the Battle Deck screen and retry, or add-card those by hand."
+            )
         return
 
     if args.command == "snap":

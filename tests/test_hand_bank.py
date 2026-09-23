@@ -6,9 +6,13 @@ import numpy
 
 from clash_jev.hand import (
     PLAYER_DECK,
+    CatalogBank,
     ShapeBank,
     _as_variants,
+    deck_slot_boxes,
+    player_deck,
     read_hand,
+    teach_deck,
 )
 
 
@@ -42,6 +46,25 @@ class PlayerDeckTests(unittest.TestCase):
         for card in ("archers", "mega_minion"):
             self.assertNotIn(card, PLAYER_DECK)
 
+    def test_player_deck_prefers_eight_name_file(self):
+        from clash_jev import hand
+
+        path = hand.PLAYER_DECK_FILE
+        old = path.read_text() if path.exists() else None
+        try:
+            path.write_text('["knight","arrows","giant","goblins","fireball","musketeer","archers","minions"]')
+            self.assertEqual(player_deck(), frozenset(
+                {"knight", "arrows", "giant", "goblins", "fireball", "musketeer", "archers", "minions"}
+            ))
+            path.write_text('["too","few"]')
+            self.assertEqual(player_deck(), PLAYER_DECK)
+        finally:
+            if old is None:
+                if path.exists():
+                    path.unlink()
+            else:
+                path.write_text(old)
+
     def test_bank_loads_all_rows_for_soft_filter(self):
         bank = ShapeBank()
         unfiltered = ShapeBank(deck=None)
@@ -55,9 +78,75 @@ class PlayerDeckTests(unittest.TestCase):
         if knight_rows:
             name, score, lead = bank_default.match(bank_default.matrix[knight_rows[0]])
             self.assertTrue(
-                name in PLAYER_DECK or (score >= 0.62 and lead >= 0.12),
+                name in player_deck() or (score >= 0.62 and lead >= 0.12),
                 f"knight art must not steal a slot via soft filter: {name} score={score:.3f} lead={lead:.3f}",
             )
+
+
+class TeachDeckTests(unittest.TestCase):
+    def test_deck_slot_boxes_scale_from_reference(self):
+        import numpy
+
+        frame = numpy.zeros((2340, 1080, 3), dtype=numpy.uint8)
+        boxes = deck_slot_boxes(frame)
+        self.assertEqual(len(boxes), 8)
+        self.assertEqual(boxes[0], (40, 575, 230, 300))
+        half = numpy.zeros((1170, 540, 3), dtype=numpy.uint8)
+        x, y, w, h = deck_slot_boxes(half)[0]
+        self.assertEqual((x, y, w, h), (20, 288, 115, 150))
+
+    def test_catalog_bank_loads_official_art(self):
+        bank = CatalogBank()
+        self.assertGreater(len(bank.names), 50)
+        self.assertIn("goblin_hut", bank.names)
+        self.assertIn("mini_pekka", bank.names)
+
+    def test_teach_deck_hunt3_all_eight(self):
+        import json
+        import cv2
+
+        from clash_jev import hand
+
+        hunt = Path(r"C:\Users\newuser\AppData\Local\Temp\opencode\hunt3.png")
+        if not hunt.exists():
+            self.skipTest("missing hunt3.png deck screen")
+        frame = cv2.imread(str(hunt))
+        assert frame is not None
+        # Snapshot both persisted teach outputs so the suite never leaks deck exemplars
+        # into the live bank (rotating out hand-tested variants breaks the 12/12).
+        extra_path = hand.EXTRA_CARD_SHAPES
+        extra_before = extra_path.read_bytes() if extra_path.exists() else None
+        deck_path = hand.PLAYER_DECK_FILE
+        deck_before = deck_path.read_bytes() if deck_path.exists() else None
+        try:
+            report = teach_deck(frame)
+            self.assertTrue(report["complete"], report["outcomes"])
+            expected = {
+                "musketeer",
+                "goblin_cage",
+                "giant",
+                "spear_goblins",
+                "fireball",
+                "goblin_hut",
+                "mini_pekka",
+                "goblins",
+            }
+            self.assertEqual(set(report["names"]), expected)
+            self.assertEqual(player_deck(), expected)
+            extra_after = json.loads(extra_path.read_text())
+            for name in expected:
+                self.assertIn(name, extra_after)
+        finally:
+            if extra_before is None:
+                if extra_path.exists():
+                    extra_path.unlink()
+            else:
+                extra_path.write_bytes(extra_before)
+            if deck_before is None:
+                if deck_path.exists():
+                    deck_path.unlink()
+            else:
+                deck_path.write_bytes(deck_before)
 
 
 class MultiExemplarMatchTests(unittest.TestCase):
