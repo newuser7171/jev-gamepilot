@@ -81,6 +81,13 @@ _CATALOG_LEAD = 0.002
 _CATALOG_SHAPE_WEIGHT = 0.55
 _CATALOG_COLOR_WEIGHT = 0.45
 _CATALOG_COLOR_SIZE = (16, 16)
+# Catalog fallback on a hand slot: the deck screen threshold is tuned for large crops, so a
+# hand-sized crop needs a clearer winner. In-deck names accept lower (art already taught via
+# teach-deck lives in the catalog); non-deck names need a confident read (loadout changed).
+_CATALOG_HAND_IN_DECK_SCORE = 0.35
+_CATALOG_HAND_IN_DECK_LEAD = 0.005
+_CATALOG_HAND_ANY_SCORE = 0.45
+_CATALOG_HAND_ANY_LEAD = 0.02
 # Battle-deck grid on a 1080x2340 portrait frame (hunt3.png), scaled to any frame size.
 _DECK_REF_SIZE = (1080, 2340)
 _DECK_XS = (40, 300, 560, 820)
@@ -431,6 +438,7 @@ class HandReader:
 
     def __init__(self):
         self.bank = ShapeBank()
+        self.catalog = CatalogBank()
         self.next_card: str | None = None
 
     def read(self, frame: numpy.ndarray) -> tuple[HandCard, ...]:
@@ -449,6 +457,24 @@ class HandReader:
             if not known:
                 name, score, lead = self.bank.match(shape, lower_half=True)
                 known = score >= _LOWER_HALF_MATCH and lead >= _LOWER_HALF_MARGIN
+            if not known:
+                # Shape bank only knows taught cards. Official catalog names a loadout card
+                # that was never in player_deck / teach-deck when the crop is decisive.
+                cat_name, cat_score, cat_lead = self.catalog.match(reference, _slot_box(slot))
+                if cat_name is not None:
+                    in_deck = cat_name in player_deck()
+                    if in_deck:
+                        known = (
+                            cat_score >= _CATALOG_HAND_IN_DECK_SCORE
+                            and cat_lead >= _CATALOG_HAND_IN_DECK_LEAD
+                        )
+                    else:
+                        known = (
+                            cat_score >= _CATALOG_HAND_ANY_SCORE
+                            and cat_lead >= _CATALOG_HAND_ANY_LEAD
+                        )
+                    if known:
+                        name, score, lead = cat_name, cat_score, cat_lead
             hand.append(HandCard(slot, name if known else "unknown", _is_lit(reference, slot)))
         self.next_card = self._read_next(reference)
         return tuple(hand)

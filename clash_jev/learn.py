@@ -129,10 +129,13 @@ class BattleRecord:
     behind: bool = False
     auto_taught: list[str] = field(default_factory=list)
 
-    def as_json(self) -> str:
+    def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["crowns"] = list(self.crowns)
-        return json.dumps(d, separators=(",", ":"))
+        return d
+
+    def as_json(self) -> str:
+        return json.dumps(self.as_dict(), separators=(",", ":"))
 
 
 class SelfImprover:

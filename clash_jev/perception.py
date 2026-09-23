@@ -36,7 +36,9 @@ class Layout:
     # Health-bar strip of each princess tower: x0, y0, x1, y1.
     tower_bars: tuple[tuple[str, tuple[float, float, float, float]], ...] = (
         ("enemy_left", (0.20, 0.139, 0.36, 0.163)),
-        ("enemy_right", (0.64, 0.139, 0.80, 0.163)),
+        # Phone frames place enemy_right ~y0.078–0.17, x through 0.87 (warp sits higher/right of the
+        # tablet-tuned mirror of enemy_left). Cover both the old mirror strip and the measured slot.
+        ("enemy_right", (0.64, 0.078, 0.87, 0.17)),
         ("my_left", (0.20, 0.612, 0.36, 0.636)),
         ("my_right", (0.64, 0.612, 0.80, 0.636)),
     )
@@ -51,8 +53,9 @@ class Layout:
 
 # Filled part of a tower bar: (hue range, min saturation, min value) in OpenCV HSV.
 # Device-to-reference warp softens the fill; phone frames sit lower on sat/val than the
-# original tablet captures this table was tuned on.
-_TOWER_BAR_COLOUR = {"enemy": ((160, 175), 140, 150), "my": ((95, 115), 90, 140)}
+# original tablet captures this table was tuned on. Enemy hue measured 148–151 on live
+# A35 pink bars — old (160,175) missed them entirely.
+_TOWER_BAR_COLOUR = {"enemy": ((148, 175), 130, 140), "my": ((95, 115), 80, 135)}
 
 
 def to_reference(frame: numpy.ndarray) -> numpy.ndarray:

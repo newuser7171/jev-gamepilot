@@ -28,6 +28,40 @@ from universal_vision import UniversalVision, UniversalSceneState
 console = Console()
 
 
+def clash_max_idle(
+    *,
+    action_name: str,
+    strat: str,
+    phase: str,
+    threat_urgency: float,
+    elixir: int,
+    default: float = 2.20,
+) -> float:
+    """Hard-hold only for NO_PLAY / calm adapter waits. Real pressure gets a finite timeout
+    so a stuck wait() cannot freeze the pilot while troops close in."""
+    no_play = strat in {"save_elixir", "hold_elixir_for_threat", "wait_for_full"}
+    adapter_wait = action_name in ("wait", "maintain_course", "stand_idle") and (
+        no_play
+        or strat.startswith("defend")
+        or strat.startswith("push")
+        or strat.startswith("counter")
+        or strat in ("cycle", "build_push")
+    )
+    if no_play and phase not in ("main_menu", "game_over", "matchmaking"):
+        return 9999.0
+    if phase == "main_menu":
+        return 1.50
+    if phase == "game_over":
+        return 1.00
+    if adapter_wait and threat_urgency < 0.40:
+        return 9999.0
+    if adapter_wait:
+        return 2.50
+    if no_play or elixir < 5:
+        return 5.50
+    return default
+
+
 class PhoneGamePilot:
     def __init__(self, profile_id: str = "auto", device_serial: str = None):
         self.adb = AdbController(device_serial=device_serial)
@@ -218,25 +252,14 @@ class PhoneGamePilot:
                 # elixir is actually spendable or a threat is in our half.
                 if "clash" in self.profile.id:
                     strat = str(decision.get("strategy") or "")
-                    no_play = strat in {"save_elixir", "hold_elixir_for_threat", "wait_for_full"}
-                    adapter_wait = action_name in ("wait", "maintain_course", "stand_idle") and (
-                        no_play or strat.startswith("defend") or strat.startswith("push") or strat.startswith("counter") or strat in ("cycle", "build_push")
+                    max_idle = clash_max_idle(
+                        action_name=action_name,
+                        strat=strat,
+                        phase=phase,
+                        threat_urgency=float(getattr(scene, "threat_urgency", 0.0) or 0.0),
+                        elixir=int(getattr(scene, "elixir", 0) or 0),
+                        default=max_idle,
                     )
-                    # NO_PLAY is a hard hold — never promote a deploy out of it.
-                    if no_play and phase not in ("main_menu", "game_over", "matchmaking"):
-                        max_idle = 9999.0
-                    elif phase == "main_menu":
-                        max_idle = 1.50
-                    elif phase == "game_over":
-                        max_idle = 1.00
-                    elif adapter_wait and scene.threat_urgency < 0.70 and scene.elixir < 5:
-                        max_idle = 9999.0
-                    elif adapter_wait and scene.threat_urgency < 0.40:
-                        max_idle = 9999.0
-                    elif no_play or scene.elixir < 5:
-                        max_idle = 5.50
-                    else:
-                        max_idle = 2.20
                 if action_name in ["wait", "maintain_course", "stand_idle"] and (now - self.last_action_time > max_idle):
                     if phase != "matchmaking" and "8ball" not in self.profile.id and "pool" not in self.profile.id:
                         scene_pick = (getattr(scene, "recommended_action", "") or "").strip()

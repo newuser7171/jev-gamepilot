@@ -323,6 +323,11 @@ class TacticalReflexPolicy:
             ready_cards = [c for c, cost in affordable if cost <= state.elixir]
         if not ready_cards:
             return None
+        # Prefer identified cards: an unknown slot is a blind deploy (cost assumed 3).
+        # Only fall through to unknown when no known ready card is affordable.
+        known_ready = [c for c in ready_cards if c.name != "unknown"]
+        if known_ready:
+            ready_cards = known_ready
 
         # Spells never answer cycle/push/build. On defend they only fire into a real multi-body pile —
         # single-target chip (empty fireball at a tower) is wasted elixir.
@@ -623,7 +628,7 @@ class ClashBattleAdapter:
         rec = self.learner.note_battle_end(outcome, crowns_out, elapsed, behind=behind)
         if self.tactical_policy is not None:
             self.tactical_policy.tune = self.learner.params
-        return rec.as_dict() if rec else None
+        return rec.as_dict() if rec is not None else None
 
     def _auto_teach_unknown(self, device_frame: np.ndarray, ref: np.ndarray, hand_cards) -> None:
         """Confident catalog ids on unknown, non-empty slots streak into a canary teach."""
@@ -792,13 +797,35 @@ class ClashBattleAdapter:
         state = self.extract_state_from_frame(frame_bgr, cached_elixir=current_elixir, threats=threats)
         self.tactical_policy._gate_fired = False
 
+        # Lane pressure is ground truth for urgency — vision red-bars miss bridge
+        # crossers (band starts mid-our-half) and pilot idle gates read scene.urgency.
+        lane_enemy = (
+            state.left.enemy_on_my_side
+            + state.right.enemy_on_my_side
+            + state.left.enemy_at_bridge
+            + state.right.enemy_at_bridge
+        )
+        if lane_enemy > 0:
+            depth_bonus = 0.08 * (
+                state.left.enemy_on_my_side + state.right.enemy_on_my_side
+            )
+            threat_urgency = max(float(threat_urgency or 0.0), min(0.95, 0.55 + depth_bonus))
+
         # TIER 1: STRATEGY FORMULATION
         chosen_strategy = None
         engine_source = "tactical_reflex"
         confidence = 0.95
 
+        # Cloud System One is ~700-900ms RTT — skip it while bodies are on our
+        # half so defend taps land inside the engagement window.
+        immediate_contact = lane_enemy > 0 or float(threat_urgency or 0.0) >= 0.50
+
         # Attempt Jev cloud System One if configured
-        if self.jev_client is not None and os.environ.get("TYPESAFE_API_KEY"):
+        if (
+            not immediate_contact
+            and self.jev_client is not None
+            and os.environ.get("TYPESAFE_API_KEY")
+        ):
             try:
                 from typesafe_sdk import Choice
                 from clash_jev.policy import build_state as jev_build_state
@@ -810,9 +837,13 @@ class ClashBattleAdapter:
                 q = {"strategy": Choice(instructions=STRATEGY_INSTRUCTIONS, criteria=criteria)}
                 sent_state = jev_build_state(state)
                 ans = self.jev_client.system_one(sent_state, q).choices["strategy"]
-                chosen_strategy = ans.choice
-                engine_source = "jev_system_one"
-                confidence = float(ans.probabilities.get(chosen_strategy, 0.92))
+                cloud_conf = float(ans.probabilities.get(ans.choice, 0.0))
+                # Sub-0.55 cloud picks have been shipping conf 0.25 push_left spam at
+                # ~800ms RTT while local sits at 0.94/33ms — reject and fall through.
+                if cloud_conf >= 0.55:
+                    chosen_strategy = ans.choice
+                    engine_source = "jev_system_one"
+                    confidence = cloud_conf
             except Exception:
                 chosen_strategy = None
 

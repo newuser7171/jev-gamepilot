@@ -9,6 +9,7 @@ from clash_jev.learn import (
     AUTO_TEACH_STREAK,
     MIN_GAMES_TO_TUNE,
     REJECT_WIN_RATE,
+    BattleRecord,
     SelfImprover,
     TuneParams,
     crowns_from_towers,
@@ -125,6 +126,33 @@ class BanditRetuneTests(unittest.TestCase):
             params_path=self.learner.params_path,
         )
         self.assertEqual(reloaded.cells[self.learner.params.key()].games, 1)
+
+    def test_battle_record_as_dict(self):
+        """Crash regression: ClashBattleAdapter.note_battle_end returns rec.as_dict()."""
+        rec = BattleRecord(
+            ts=1.0,
+            outcome="win",
+            crowns=(2, 1),
+            elapsed_s=90.0,
+            params={"push": 0},
+        )
+        d = rec.as_dict()
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d["outcome"], "win")
+        self.assertEqual(d["crowns"], [2, 1])
+        self.assertIsInstance(rec.as_json(), str)
+
+    def test_adapter_note_battle_end_returns_dict(self):
+        from adapters.clash_adapter import ClashBattleAdapter
+
+        ad = ClashBattleAdapter()
+        ad.note_battle_start()
+        ad._last_state = make_state(elixir=7, elapsed_s=45.0)
+        out = ad.note_battle_end(None)
+        self.assertIsInstance(out, dict)
+        self.assertIn("outcome", out)
+        # Idempotent while closed — second call must not raise.
+        self.assertIsNone(ad.note_battle_end(None))
 
 
 class CrownOutcomeTests(unittest.TestCase):

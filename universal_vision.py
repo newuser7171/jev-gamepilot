@@ -450,8 +450,9 @@ class UniversalVision:
 
         # Specialized Clash Royale RTS Perception (Enemy Unit Health Bar Detection)
         if profile.id == "mobile_clash_royale" and scene.game_phase == "in_battle":
-            # Our half only (below the river) — y grows downward on portrait.
-            friendly_y1 = int(h * 0.55)
+            # Bridge band through our half — y grows downward on portrait.
+            # Starting at 0.55 missed units still crossing the river (0.47-0.55).
+            friendly_y1 = int(h * 0.47)
             friendly_y2 = int(h * 0.77)
             friendly_zone = frame_bgr[friendly_y1:friendly_y2, :]
 

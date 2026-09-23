@@ -813,6 +813,11 @@ class UniversalBrain:
                         current_elixir=current_elixir,
                         threats=scene.threats,
                     )
+                    # Adapter derives urgency from lane counts; mirror it back so
+                    # phone_pilot NO_PLAY / idle gates see real contact pressure.
+                    _ts = float(decision.get("threat_score") or 0.0)
+                    if _ts > float(getattr(scene, "threat_urgency", 0.0) or 0.0):
+                        scene.threat_urgency = _ts
                     return decision
                 else:
                     # Adapter missing — never blind-deploy while elixir strategy says hold.
