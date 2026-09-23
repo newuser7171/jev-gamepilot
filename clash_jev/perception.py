@@ -50,7 +50,9 @@ class Layout:
 
 
 # Filled part of a tower bar: (hue range, min saturation, min value) in OpenCV HSV.
-_TOWER_BAR_COLOUR = {"enemy": ((168, 174), 190, 190), "my": ((98, 102), 125, 225)}
+# Device-to-reference warp softens the fill; phone frames sit lower on sat/val than the
+# original tablet captures this table was tuned on.
+_TOWER_BAR_COLOUR = {"enemy": ((160, 175), 140, 150), "my": ((95, 115), 90, 140)}
 
 
 def to_reference(frame: numpy.ndarray) -> numpy.ndarray:
@@ -131,7 +133,9 @@ class Perception:
                 health[name] = 1.0 if name not in self._king_full else None
         for name, box in self.layout.tower_bars:
             filled = self._bar_pixels(hsv, name, box)
-            if filled >= 2:
+            # 1 px catches a tower at ~1% HP (21/2030) whose bar is only a sliver;
+            # the missing-grace path still absorbs spell flashes and number overlays.
+            if filled >= 1:
                 self._tower_missing_since.pop(name, None)
                 # A full bar's width varies by a few pixels with the screen shape, so "full" is the widest
                 # this tower's bar has been seen, and never less than most of the nominal width

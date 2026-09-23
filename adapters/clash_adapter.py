@@ -40,7 +40,7 @@ from clash_jev.moves import (
 )
 from clash_jev.state import BattleState, HandCard, LaneView, Towers
 from clash_jev.perception import Perception, Layout
-from clash_jev.screenmap import REFERENCE
+from clash_jev.screenmap import REFERENCE, ScreenMap
 from clash_jev.units import Unit, find_units
 from clash_jev.troops import TroopClassifier
 from clash_jev.hand import HandReader, HAND_TAP_POINTS
@@ -562,11 +562,18 @@ class ClashBattleAdapter:
         """
         elapsed = time.time() - self.start_time
 
+        # Layout fractions and colour thresholds are exact on the 419x633 reference;
+        # the device frame must be warped before elixir/tower/unit reads.
+        try:
+            ref = ScreenMap.for_frame(frame_bgr).to_reference(frame_bgr)
+        except Exception:
+            ref = frame_bgr
+
         # 1. Read Elixir
         elixir = cached_elixir
         if elixir is None:
             try:
-                elixir = self.perception.read_elixir(frame_bgr)
+                elixir = self.perception.read_elixir(ref)
             except Exception:
                 elixir = 5
         elixir = max(0, min(10, elixir))
@@ -574,9 +581,9 @@ class ClashBattleAdapter:
         # 2. Read Units & Lane Pressure
         units: Tuple[Unit, ...] = ()
         try:
-            raw_units = self.perception.read_units(frame_bgr)
+            raw_units = self.perception.read_units(ref)
             if self.perception.identifier:
-                units = self.perception.identifier.name_units(frame_bgr, raw_units)
+                units = self.perception.identifier.name_units(ref, raw_units)
             else:
                 units = raw_units
         except Exception:
@@ -606,14 +613,14 @@ class ClashBattleAdapter:
         # 4. Read Towers
         towers = Towers()
         try:
-            towers = self.perception.read_towers(frame_bgr)
+            towers = self.perception.read_towers(ref)
         except Exception:
             towers = Towers(enemy_left=1.0, enemy_right=1.0, enemy_king=1.0, my_left=1.0, my_right=1.0, my_king=1.0)
 
-        # 5. Read Hand Cards
+        # 5. Read Hand Cards (HandReader warps internally; ref is already reference-sized)
         hand_cards = []
         try:
-            hand_cards = list(self.perception.hand_reader.read(frame_bgr))
+            hand_cards = list(self.perception.hand_reader.read(ref))
         except Exception:
             pass
 

@@ -31,6 +31,10 @@ CALIBRATIONS: dict[float, Calibration] = {
     # A 1440x2304 tablet. Arena: enemy bars y 95->101, own bars 393->415, river 276->292,
     # bar centres x 122.5/308.5 -> 116.5/314.5. Bottom bar: best card fit over 8 cards.
     0.625: Calibration(1.0645, 1.0537, 0.9, 0.94, 0.0, -1.0),
+    # Samsung Galaxy A35 1080x2340. Arena fit from live tower bars: enemy centre g162->ref96,
+    # own centre g563->ref395, bar x centres symmetric about 209.5 at scale ~1.34.
+    # Bottom block matches the tablet fit (elixir pips and hand already read there).
+    0.462: Calibration(1.3405, 1.3372, 34.35, 0.94, 0.0, -1.0),
 }
 
 
