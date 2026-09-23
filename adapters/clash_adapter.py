@@ -119,9 +119,55 @@ class TacticalReflexPolicy:
             return 2, 5
         return 5, 8
 
+    @staticmethod
+    def _tower_hp(v: Optional[float]) -> float:
+        """None (bar unseen) reads as full; 0.0 = destroyed."""
+        return 1.0 if v is None else max(0.0, v)
+
+    @classmethod
+    def _total_hp(cls, t: Towers, mine: bool) -> float:
+        vals = (
+            (t.my_left, t.my_right, t.my_king)
+            if mine
+            else (t.enemy_left, t.enemy_right, t.enemy_king)
+        )
+        return sum(cls._tower_hp(v) for v in vals)
+
+    @classmethod
+    def _behind(cls, state: BattleState) -> bool:
+        return cls._total_hp(state.towers, mine=False) > cls._total_hp(state.towers, mine=True) + 0.10
+
+    @staticmethod
+    def _is_endgame(state: BattleState) -> bool:
+        # Last 30s of regulation (180s) and all overtime.
+        return state.elapsed_s >= 150.0
+
+    def _attack_lane(self, state: BattleState, force_kill: bool = False) -> str:
+        """Alternate lanes normally; in endgame / kill range aim at the weaker tower."""
+        left_hp = self._tower_hp(state.towers.enemy_left)
+        right_hp = self._tower_hp(state.towers.enemy_right)
+        if state.towers.enemy_left == 0 and state.towers.enemy_right != 0:
+            return "push_left"
+        if state.towers.enemy_right == 0 and state.towers.enemy_left != 0:
+            return "push_right"
+        if force_kill or state.elapsed_s >= 150.0:
+            if right_hp < left_hp - 0.05:
+                return "push_right"
+            if left_hp < right_hp - 0.05:
+                return "push_left"
+        self._push_counter += 1
+        return "push_left" if (self._push_counter % 2 == 0) else "push_right"
+
     def evaluate_strategy(self, state: BattleState, threat_urgency: float = 0.0) -> str:
         save_below, push_at = self.tempo_thresholds(state)
         opening = state.elapsed_s < 12.0
+        endgame = self._is_endgame(state)
+        behind = self._behind(state) if endgame else False
+
+        # Endgame + behind: dump elixir into offense — floor drops, push comes sooner.
+        if endgame and behind:
+            push_at = max(3, push_at - 2)
+            save_below = max(1, save_below - 2)
 
         left_threats = state.left.enemy_on_my_side
         right_threats = state.right.enemy_on_my_side
@@ -174,14 +220,41 @@ class TacticalReflexPolicy:
                 return "cycle"
             return "save_elixir"
 
-        # 5. Heavy Push Formulation (rate-aware threshold)
+        # 4b. Opponent-elixir push gate: never open a fresh attack into a loaded opponent
+        # when we have no board presence to convert. Hold/cycle until they spend.
+        # Endgame while behind: the clock is the bigger threat — bypass the gate.
+        enemy_e = state.enemy_elixir_estimate
+        if (
+            not (endgame and behind)
+            and enemy_e is not None
+            and enemy_e >= 7.0
+            and state.elixir <= enemy_e - 3.0
+            and state.left.mine_on_my_side == 0
+            and state.left.mine_at_bridge == 0
+            and state.right.mine_on_my_side == 0
+            and state.right.mine_at_bridge == 0
+        ):
+            if state.elixir < save_below:
+                return "save_elixir"
+            return "cycle"
+
+        # 5. Heavy Push Formulation (rate-aware threshold + tank support buffer)
         if state.elixir >= push_at:
-            for card in state.hand:
-                card_tags = info(card.name).tags
-                if "slow" in card_tags and "tank" in card_tags:
-                    return "build_push"
-            self._push_counter += 1
-            return "push_left" if (self._push_counter % 2 == 0) else "push_right"
+            # Slow back-line builds need runway — not the last 30s. Endgame → bridge.
+            if not endgame:
+                for card in state.hand:
+                    card_info = info(card.name)
+                    card_tags = card_info.tags
+                    if "slow" in card_tags and "tank" in card_tags:
+                        # Giant/Golem from back: keep >=2 elixir after the tank for a support troop
+                        tank_cost = card_info.cost or 5
+                        if state.elixir >= tank_cost + 2:
+                            return "build_push"
+                        # Tank in hand but no buffer: cycle a cheap card instead of naked-tanking
+                        if state.elixir >= save_below:
+                            return "cycle"
+                        return "save_elixir"
+            return self._attack_lane(state, force_kill=endgame)
 
         # 6. Elixir Conservation (rate-aware — double/triple dumps sooner)
         if state.elixir < save_below:
@@ -193,8 +266,7 @@ class TacticalReflexPolicy:
             if cost is not None and cost <= 2:
                 return "cycle"
 
-        self._push_counter += 1
-        return "push_left" if (self._push_counter % 2 == 0) else "push_right"
+        return self._attack_lane(state, force_kill=endgame)
 
     @staticmethod
     def _real_threat_count(state: BattleState) -> int:
@@ -337,9 +409,18 @@ class TacticalReflexPolicy:
                 if sq.name == "right_bridge":
                     return sq
 
-        # 4. Build Push (backline spawn)
+        # 4. Build Push (backline spawn) — prefer the weaker enemy tower
         if strategy == "build_push":
-            lane = "left" if (state.towers.enemy_left != 0) else "right"
+            left_hp = self._tower_hp(state.towers.enemy_left)
+            right_hp = self._tower_hp(state.towers.enemy_right)
+            if state.towers.enemy_left == 0:
+                lane = "left"
+            elif state.towers.enemy_right == 0:
+                lane = "right"
+            elif right_hp < left_hp - 0.08:
+                lane = "right"
+            else:
+                lane = "left"
             for sq in squares:
                 if sq.name == f"{lane}_back":
                     return sq
@@ -469,14 +550,22 @@ class ClashBattleAdapter:
         left_lane = self.perception.read_lane(units, "left")
         right_lane = self.perception.read_lane(units, "right")
 
-        # 3. Read Towers
+        # 3. Track opponent elixir (never on screen) — gates aggressive pushes
+        # elixir_rate depends only on elapsed_s; hand is irrelevant here.
+        rate = BattleState(elapsed_s=elapsed, elixir=0, hand=()).elixir_rate
+        try:
+            enemy_elixir = self.perception.opponent.update(elapsed, rate, units)
+        except Exception:
+            enemy_elixir = None
+
+        # 4. Read Towers
         towers = Towers()
         try:
             towers = self.perception.read_towers(frame_bgr)
         except Exception:
             towers = Towers(enemy_left=1.0, enemy_right=1.0, enemy_king=1.0, my_left=1.0, my_right=1.0, my_king=1.0)
 
-        # 4. Read Hand Cards
+        # 5. Read Hand Cards
         hand_cards = []
         try:
             hand_cards = list(self.perception.hand_reader.read(frame_bgr))
@@ -497,6 +586,7 @@ class ClashBattleAdapter:
             right=right_lane,
             towers=towers,
             units=units,
+            enemy_elixir_estimate=enemy_elixir,
             snapshot_interval_s=1.0,
             seconds_at_full_elixir=0.5 if elixir >= 10 else 0.0,
         )

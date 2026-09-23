@@ -16,15 +16,21 @@ def make_state(
     hand=None,
     seconds_at_full_elixir=0.0,
     units=None,
+    enemy_elixir_estimate=None,
+    towers=None,
 ):
+    from clash_jev.state import Towers
+
     return BattleState(
         elapsed_s=elapsed_s,
         elixir=elixir,
         hand=tuple(hand) if hand else (HandCard(0, "knight", True),),
         left=left or LaneView(),
         right=right or LaneView(),
+        towers=towers or Towers(),
         seconds_at_full_elixir=seconds_at_full_elixir,
         units=tuple(units) if units else (),
+        enemy_elixir_estimate=enemy_elixir_estimate,
     )
 
 
@@ -239,6 +245,176 @@ class PhaseHysteresisTests(unittest.TestCase):
         self.vision.apply_clash_phase_hysteresis("matchmaking")
         self.vision.apply_clash_phase_hysteresis("in_battle")
         self.assertEqual(self.vision.apply_clash_phase_hysteresis("main_menu"), "in_battle")
+
+
+class OpponentElixirGateTests(unittest.TestCase):
+    """Never open a fresh push into a loaded opponent with no board to convert."""
+
+    def setUp(self):
+        self.policy = TacticalReflexPolicy()
+
+    def test_loaded_enemy_no_presence_saves_or_cycles(self):
+        # Mid-game, enemy at 8+, we trail by 3+, empty board: hold, do not push.
+        strat = self.policy.evaluate_strategy(
+            make_state(elixir=5, elapsed_s=90.0, enemy_elixir_estimate=8.5)
+        )
+        self.assertIn(strat, ("save_elixir", "cycle"))
+
+    def test_loaded_enemy_with_presence_still_counter_pushes(self):
+        # Survivors on our side convert regardless of enemy elixir estimate.
+        self.policy._last_defend_elapsed = 85.0
+        strat = self.policy.evaluate_strategy(
+            make_state(
+                elixir=5,
+                elapsed_s=90.0,
+                left=LaneView(mine_on_my_side=1),
+                enemy_elixir_estimate=8.5,
+            )
+        )
+        self.assertEqual(strat, "counter_push_left")
+
+    def test_comfortable_enemy_lead_still_pushes_at_threshold(self):
+        # Enemy at 8 but we also at 8 (within 3): push gate does not fire.
+        strat = self.policy.evaluate_strategy(
+            make_state(elixir=8, elapsed_s=90.0, enemy_elixir_estimate=8.0)
+        )
+        self.assertIn(strat, ("push_left", "push_right", "build_push"))
+
+    def test_unknown_enemy_estimate_does_not_block(self):
+        # None estimate: no gate — normal push ladder at threshold.
+        strat = self.policy.evaluate_strategy(make_state(elixir=8, elapsed_s=90.0))
+        self.assertIn(strat, ("push_left", "push_right", "build_push"))
+
+
+class TankSupportBufferTests(unittest.TestCase):
+    """Giant/Golem from the back needs +2 elixir after the tank for a support troop."""
+
+    def setUp(self):
+        self.policy = TacticalReflexPolicy()
+
+    def test_giant_at_push_threshold_without_buffer_cycles(self):
+        # Single rate push_at=8, Giant costs 5, buffer needed=2 → 5+2=7 < 8 is fine,
+        # but at exactly push_at with Giant in hand: 8 >= 5+2 → build_push allowed.
+        # At elixir=7 (below push_at) we never reach build_push — save/cycle path.
+        # Force the tank branch: elixir=8, Giant in hand → build_push (buffer ok).
+        state = make_state(
+            elixir=8,
+            elapsed_s=90.0,
+            hand=(HandCard(0, "giant", True), HandCard(1, "knight", True)),
+        )
+        strat = self.policy.evaluate_strategy(state)
+        self.assertEqual(strat, "build_push")
+
+    def test_giant_no_buffer_below_tank_plus_two_cycles(self):
+        # Double rate (pre-endgame): push_at=6. Giant=5, need 5+2=7 > 6 → no build_push.
+        # Above save_below (3): cycle a cheap card rather than naked-tank.
+        state = make_state(
+            elixir=6,
+            elapsed_s=140.0,
+            hand=(HandCard(0, "giant", True), HandCard(1, "goblins", True)),
+        )
+        strat = self.policy.evaluate_strategy(state)
+        self.assertEqual(strat, "cycle")
+
+    def test_giant_no_buffer_below_save_floor_saves(self):
+        # Double rate save_below=3: elixir=2 → save, not cycle.
+        state = make_state(
+            elixir=2,
+            elapsed_s=140.0,
+            hand=(HandCard(0, "giant", True),),
+        )
+        strat = self.policy.evaluate_strategy(state)
+        self.assertEqual(strat, "save_elixir")
+
+    def test_giant_with_buffer_builds(self):
+        # Double rate pre-endgame: elixir=7 >= 5+2 → build_push.
+        state = make_state(
+            elixir=7,
+            elapsed_s=140.0,
+            hand=(HandCard(0, "giant", True),),
+        )
+        strat = self.policy.evaluate_strategy(state)
+        self.assertEqual(strat, "build_push")
+
+
+class EndgameUrgencyTests(unittest.TestCase):
+    """Last 30s + overtime: clock beats elixir etiquette; finish the weaker tower."""
+
+    def setUp(self):
+        self.policy = TacticalReflexPolicy()
+
+    def test_endgame_behind_bypasses_enemy_gate(self):
+        # Mid-game gate would save/cycle here — endgame+behind must attack.
+        from clash_jev.state import Towers
+
+        strat = self.policy.evaluate_strategy(
+            make_state(
+                elixir=5,
+                elapsed_s=160.0,
+                enemy_elixir_estimate=9.0,
+                towers=Towers(enemy_left=1.0, enemy_right=1.0, enemy_king=1.0,
+                              my_left=0.3, my_right=1.0, my_king=1.0),
+            )
+        )
+        self.assertIn(strat, ("push_left", "push_right"))
+
+    def test_midgame_behind_still_gates(self):
+        from clash_jev.state import Towers
+
+        strat = self.policy.evaluate_strategy(
+            make_state(
+                elixir=5,
+                elapsed_s=90.0,
+                enemy_elixir_estimate=9.0,
+                towers=Towers(enemy_left=1.0, enemy_right=1.0, enemy_king=1.0,
+                              my_left=0.3, my_right=1.0, my_king=1.0),
+            )
+        )
+        self.assertIn(strat, ("save_elixir", "cycle"))
+
+    def test_endgame_behind_lowers_push_threshold(self):
+        from clash_jev.state import Towers
+
+        # Double-rate push_at is 6; endgame+behind → 4. Elixir 4 must push, not save.
+        strat = self.policy.evaluate_strategy(
+            make_state(
+                elixir=4,
+                elapsed_s=160.0,
+                towers=Towers(enemy_left=1.0, enemy_right=1.0, enemy_king=1.0,
+                              my_left=0.0, my_right=1.0, my_king=1.0),
+            )
+        )
+        self.assertIn(strat, ("push_left", "push_right"))
+
+    def test_endgame_targets_weaker_tower(self):
+        from clash_jev.state import Towers
+
+        # Right tower melted → every endgame push goes right (pocket/finish).
+        for _ in range(6):
+            strat = self.policy.evaluate_strategy(
+                make_state(
+                    elixir=8,
+                    elapsed_s=170.0,
+                    towers=Towers(enemy_left=1.0, enemy_right=0.2, enemy_king=1.0,
+                                  my_left=1.0, my_right=1.0, my_king=1.0),
+                )
+            )
+            self.assertEqual(strat, "push_right", strat)
+
+    def test_endgame_skips_slow_build_push(self):
+        from clash_jev.state import Towers
+
+        # Giant in hand + endgame: no build_push — bridge rush instead.
+        strat = self.policy.evaluate_strategy(
+            make_state(
+                elixir=8,
+                elapsed_s=155.0,
+                hand=(HandCard(0, "giant", True),),
+                towers=Towers(enemy_left=1.0, enemy_right=1.0, enemy_king=1.0,
+                              my_left=1.0, my_right=1.0, my_king=1.0),
+            )
+        )
+        self.assertIn(strat, ("push_left", "push_right"))
 
 
 class CycleLaneTests(unittest.TestCase):
