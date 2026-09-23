@@ -479,7 +479,7 @@ class ClashBattleAdapter:
         # 4. Read Hand Cards
         hand_cards = []
         try:
-            hand_cards = list(self.perception.hand_reader.read_hand(frame_bgr))
+            hand_cards = list(self.perception.hand_reader.read(frame_bgr))
         except Exception:
             pass
 

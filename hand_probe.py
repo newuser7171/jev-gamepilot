@@ -55,11 +55,14 @@ def main() -> None:
         )
         shape_vec = _shape(reference, _slot_box(slot))
         scores = bank.matrix @ shape_vec
-        runner = sorted(
-            ((bank.names[i], float(scores[i])) for i in range(len(bank.names))),
-            key=lambda t: t[1],
-            reverse=True,
-        )[:3]
+        by_name: dict[str, float] = {}
+        for row, name in enumerate(bank.row_names):
+            if bank.deck is not None and name not in bank.deck:
+                continue
+            value = float(scores[row])
+            if name not in by_name or value > by_name[name]:
+                by_name[name] = value
+        runner = sorted(by_name.items(), key=lambda t: t[1], reverse=True)[:3]
         print("         top3:", ", ".join(f"{n}={sc:.3f}" for n, sc in runner))
 
 

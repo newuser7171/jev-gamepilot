@@ -147,8 +147,13 @@ def main() -> None:
         if not known(args.name):
             sys.exit(f"'{args.name}' has no entry in clash_jev/cards.py — add its facts there first.")
         frame = cv2.imread(args.image) if args.image else AdbDevice(args.serial).frame()
-        add_card(frame, args.slot - 1, args.name)
-        print(f"Learned {args.name} from slot {args.slot}.")
+        outcome = add_card(frame, args.slot - 1, args.name)
+        if outcome == "duplicate":
+            print(f"{args.name} already has this exemplar (slot {args.slot}).")
+        elif outcome == "replaced":
+            print(f"Learned {args.name} from slot {args.slot} (rotated out the oldest exemplar).")
+        else:
+            print(f"Learned {args.name} from slot {args.slot}.")
         return
 
     if args.command == "snap":

@@ -51,6 +51,36 @@ _ART = (
     0.85,
     0.73,
 )  # the picture inside a card, as fractions of the card: no frame, no cost badge
+# The eight cards in this profile's battle deck. Matching prefers these so greyed non-deck base art
+# (knight false-positives on washed frames) does not win — but a confident non-deck read (loadout
+# changed, friendly battle) is accepted instead of forced to unknown.
+PLAYER_DECK = frozenset(
+    {
+        "spear_goblins",
+        "musketeer",
+        "giant",
+        "fireball",
+        "goblins",
+        "goblin_hut",
+        "mini_pekka",
+        "goblin_cage",
+    }
+)
+# Non-deck only wins when it is clearly the picture, not a greyed near-miss.
+_NON_DECK_SCORE = 0.62
+_NON_DECK_LEAD = 0.12
+# Live frames of the same card disagree by level frame / grey wipe. Keep a few exemplars per name;
+# match takes the best row per card, never lets one late teach erase the others.
+_MAX_VARIANTS = 4
+_VARIANT_MIN_LEAD = 0.97  # cosine against stored variants: higher than this is a duplicate
+
+
+def _as_variants(entry: object) -> list[dict]:
+    if isinstance(entry, list):
+        return [item for item in entry if isinstance(item, dict)]
+    if isinstance(entry, dict):
+        return [entry]
+    return []
 
 
 def _shape(reference: numpy.ndarray, box: tuple[int, int, int, int]) -> numpy.ndarray:
@@ -113,28 +143,89 @@ def _is_lit(reference: numpy.ndarray, slot: int) -> bool:
 
 
 class ShapeBank:
-    """Known card shapes, as one matrix: a dot product with a card's shape scores it against them all."""
+    """Known card shapes. Each name may hold several exemplar rows; a card's score is its best row."""
 
-    def __init__(self):
+    def __init__(self, deck: frozenset[str] | None = PLAYER_DECK):
         shapes = json.loads(CARD_SHAPES.read_text())
         if EXTRA_CARD_SHAPES.exists():
-            shapes.update(json.loads(EXTRA_CARD_SHAPES.read_text()))
-        self.names = list(shapes)
-        self.matrix = numpy.array([shapes[name]["shape"] for name in self.names], dtype=numpy.float32)
-        self.lower = numpy.stack([_lower_half(shape) for shape in self.matrix])
-        self.details = numpy.array([shapes[name]["detail"] for name in self.names], dtype=numpy.float32)
+            extra = json.loads(EXTRA_CARD_SHAPES.read_text())
+            for name, entry in extra.items():
+                shapes[name] = _as_variants(shapes.get(name)) + _as_variants(entry)
+        self.deck = deck
+        self.row_names: list[str] = []
+        matrix_rows: list[numpy.ndarray] = []
+        detail_rows: list[numpy.ndarray] = []
+        for name, entry in shapes.items():
+            for variant in _as_variants(entry):
+                if "shape" not in variant or "detail" not in variant:
+                    continue
+                self.row_names.append(name)
+                matrix_rows.append(numpy.asarray(variant["shape"], dtype=numpy.float32))
+                detail_rows.append(numpy.asarray(variant["detail"], dtype=numpy.float32))
+        if not matrix_rows and (deck is None or deck):
+            raise ValueError(f"no usable card shapes in {CARD_SHAPES} / {EXTRA_CARD_SHAPES}")
+        shape_dim = _THUMB[0] * _THUMB[1]
+        detail_dim = _DETAIL_SIZE[0] * _DETAIL_SIZE[1]
+        self.matrix = (
+            numpy.stack(matrix_rows)
+            if matrix_rows
+            else numpy.zeros((0, shape_dim), dtype=numpy.float32)
+        )
+        self.lower = (
+            numpy.stack([_lower_half(shape) for shape in self.matrix])
+            if len(self.matrix)
+            else numpy.zeros((0, shape_dim // 2), dtype=numpy.float32)
+        )
+        self.details = (
+            numpy.stack(detail_rows)
+            if detail_rows
+            else numpy.zeros((0, detail_dim), dtype=numpy.float32)
+        )
+
+    @property
+    def names(self) -> list[str]:
+        """Unique card ids, first-seen order (compat with probes that print bank.names)."""
+        return list(dict.fromkeys(self.row_names))
 
     def match(
         self, shape: numpy.ndarray, lower_half: bool = False, detail: bool = False
     ) -> tuple[str | None, float, float]:
-        """(best card, its score, its lead over the runner-up)."""
+        """(best card, its score, its lead over the runner-up). Score = max exemplar for that card.
+
+        Deck members win ties and near-misses. A non-deck card only wins when its score and lead
+        clear the non-deck bar — that accepts a real loadout change without letting washed-out
+        knight/arrows art steal a greyed slot.
+        """
         if detail:
             scores = self.details @ shape
         else:
             scores = self.lower @ _lower_half(shape) if lower_half else self.matrix @ shape
-        order = scores.argsort()[::-1]
-        lead = float(scores[order[0]] - scores[order[1]]) if len(order) > 1 else 1.0
-        return self.names[order[0]], float(scores[order[0]]), lead
+        per_card: dict[str, float] = {}
+        for row, name in enumerate(self.row_names):
+            value = float(scores[row])
+            if name not in per_card or value > per_card[name]:
+                per_card[name] = value
+        if not per_card:
+            return None, 0.0, 1.0
+        if self.deck is not None and not self.deck:
+            return None, 0.0, 1.0
+        order = sorted(per_card, key=per_card.get, reverse=True)  # type: ignore[arg-type]
+        best_name = order[0]
+        best_score = per_card[best_name]
+        second_score = per_card[order[1]] if len(order) > 1 else 0.0
+        lead = best_score - second_score
+
+        in_deck = lambda n: self.deck is None or n in self.deck  # noqa: E731
+        if not in_deck(best_name):
+            deck_order = [n for n in order if in_deck(n)]
+            if deck_order:
+                deck_name = deck_order[0]
+                deck_score = per_card[deck_name]
+                deck_lead = deck_score - (per_card[deck_order[1]] if len(deck_order) > 1 else 0.0)
+                if best_score >= _NON_DECK_SCORE and lead >= _NON_DECK_LEAD:
+                    return best_name, best_score, lead
+                return deck_name, deck_score, deck_lead
+        return best_name, best_score, lead
 
 
 class HandReader:
@@ -190,12 +281,28 @@ def _reference(frame: numpy.ndarray) -> numpy.ndarray:
     return ScreenMap.for_frame(frame).to_reference(frame)
 
 
-def add_card(frame: numpy.ndarray, slot: int, name: str) -> None:
-    """Teach the reader a card it does not know, from the card sitting in `slot` right now."""
+def add_card(frame: numpy.ndarray, slot: int, name: str) -> str:
+    """Teach a card from the art in `slot`. Appends an exemplar; near-duplicates are ignored.
+
+    Returns "added", "duplicate", or "replaced" (oldest variant rotated out at the cap).
+    """
     reference = _reference(frame)
+    shape = [round(float(value), 4) for value in _shape(reference, _slot_box(slot))]
+    detail = [round(float(value), 4) for value in _detail(reference, _slot_box(slot))]
     saved = json.loads(EXTRA_CARD_SHAPES.read_text()) if EXTRA_CARD_SHAPES.exists() else {}
-    saved[name] = {
-        "shape": [round(float(value), 4) for value in _shape(reference, _slot_box(slot))],
-        "detail": [round(float(value), 4) for value in _detail(reference, _slot_box(slot))],
-    }
+    variants = _as_variants(saved.get(name))
+    vector = numpy.asarray(shape, dtype=numpy.float32)
+    for existing in variants:
+        prior = numpy.asarray(existing.get("shape", []), dtype=numpy.float32)
+        if prior.shape == vector.shape:
+            cosine = float(numpy.dot(prior, vector))
+            if cosine >= _VARIANT_MIN_LEAD:
+                return "duplicate"
+    variants.append({"shape": shape, "detail": detail})
+    outcome = "added"
+    if len(variants) > _MAX_VARIANTS:
+        variants = variants[-_MAX_VARIANTS:]
+        outcome = "replaced"
+    saved[name] = variants
     EXTRA_CARD_SHAPES.write_text(json.dumps(saved, separators=(",", ":")))
+    return outcome
