@@ -71,21 +71,15 @@ def detect_coc_phase(frame_bgr: np.ndarray) -> str:
         if int(gold.sum()) > 4000 and int(purple.sum()) > 3000:
             return "results"
 
-    # In-raid: destruction % band top-center + full-width troop bar bottom.
-    troop_band = frame_bgr[int(h * 0.86):int(h * 0.97), :]
-    if troop_band.size:
-        gray = cv2.cvtColor(troop_band, cv2.COLOR_BGR2GRAY)
-        # High local contrast = army icons, not flat village grass.
-        if float(gray.std()) > 42 and float(gray.mean()) < 145:
-            top = frame_bgr[int(h * 0.02):int(h * 0.12), int(w * 0.30):int(w * 0.70)]
-            if top.size:
-                tg = cv2.cvtColor(top, cv2.COLOR_BGR2GRAY)
-                # Timer / % text is bright against darker HUD chip.
-                if float(tg.max()) > 200:
-                    return "in_raid"
+    # In-raid: red Surrender (bottom-left) is the strongest stable cue.
+    surr = frame_bgr[int(h * 0.68):int(h * 0.88), int(w * 0.01):int(w * 0.20)]
+    if surr.size:
+        red = (surr[:, :, 2] > 150) & (surr[:, :, 1] < 95) & (surr[:, :, 0] < 95)
+        if int(red.sum()) > 2500:
+            return "in_raid"
 
-    # Home: solid green Attack button bottom band.
-    home_btn = frame_bgr[int(h * 0.72):int(h * 0.84), int(w * 0.40):int(w * 0.92)]
+    # Home must beat the loose troop-bar fallback — village camps also have contrast.
+    home_btn = frame_bgr[int(h * 0.70):int(h * 0.86), int(w * 0.38):int(w * 0.94)]
     if home_btn.size:
         orange = (
             (home_btn[:, :, 2] > 150)
@@ -95,6 +89,17 @@ def detect_coc_phase(frame_bgr: np.ndarray) -> str:
         )
         if int(orange.sum()) > 5500:
             return "home_village"
+
+    # Secondary in-raid: troop-bar contrast + bright battle timer (landscape HUD).
+    troop_band = frame_bgr[int(h * 0.84):int(h * 0.99), :]
+    if troop_band.size:
+        gray = cv2.cvtColor(troop_band, cv2.COLOR_BGR2GRAY)
+        if float(gray.std()) > 28 and float(gray.mean()) < 160:
+            top = frame_bgr[int(h * 0.01):int(h * 0.14), int(w * 0.28):int(w * 0.72)]
+            if top.size:
+                tg = cv2.cvtColor(top, cv2.COLOR_BGR2GRAY)
+                if float(tg.max()) > 200 and int((tg > 220).sum()) > 800:
+                    return "in_raid"
 
     return "unknown"
 
