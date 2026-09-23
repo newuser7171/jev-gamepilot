@@ -417,6 +417,54 @@ class EndgameUrgencyTests(unittest.TestCase):
         self.assertIn(strat, ("push_left", "push_right"))
 
 
+class UnitAwareDefendTests(unittest.TestCase):
+    """Defend scoring must answer the actual body, not a generic tag soup."""
+
+    def setUp(self):
+        self.policy = TacticalReflexPolicy()
+
+    def _hand(self, *names):
+        return [HandCard(i, n, True) for i, n in enumerate(names)]
+
+    def test_air_threat_prefers_hits_air(self):
+        state = make_state(
+            elixir=8,
+            hand=self._hand("goblins", "archers", "knight"),
+            left=LaneView(enemy_on_my_side=2),
+            units=(Unit(owner="enemy", x=0.3, y=0.5, health=1.0, name="minions"),),
+        )
+        card = self.policy.select_card("defend_left", state)
+        self.assertIsNotNone(card)
+        self.assertEqual(card.name, "archers")
+
+    def test_ground_melee_penalized_into_air(self):
+        # Only ground melee in hand still must return *something* — not None.
+        state = make_state(
+            elixir=8,
+            hand=self._hand("goblins", "knight"),
+            left=LaneView(enemy_on_my_side=2),
+            units=(Unit(owner="enemy", x=0.3, y=0.5, health=1.0, name="minions"),),
+        )
+        card = self.policy.select_card("defend_left", state)
+        self.assertIsNotNone(card)
+        self.assertIn(card.name, ("goblins", "knight"))
+
+    def test_swarm_threat_prefers_splash(self):
+        # fireball allowed (threat_count >= 2 via lane units) vs goblins when enemy swarm
+        state = make_state(
+            elixir=8,
+            hand=self._hand("fireball", "mini_pekka"),
+            left=LaneView(enemy_on_my_side=3),
+            units=(
+                Unit(owner="enemy", x=0.3, y=0.5, health=1.0, name="goblins"),
+                Unit(owner="enemy", x=0.35, y=0.55, health=1.0, name="goblins"),
+            ),
+        )
+        card = self.policy.select_card("defend_centre", state)
+        self.assertIsNotNone(card)
+        self.assertEqual(card.name, "fireball")
+
+
 class CycleLaneTests(unittest.TestCase):
     """cycle strategy must alternate bridges — no left-bridge monoculture."""
 

@@ -277,6 +277,19 @@ class TacticalReflexPolicy:
             + state.right.enemy_at_bridge
         )
 
+    @staticmethod
+    def _enemy_threat_tags(state: BattleState) -> set:
+        """Tags of named enemy units currently on the board (defend scoring input)."""
+        tags: set = set()
+        for u in state.units:
+            if u.owner != "enemy" or not u.name:
+                continue
+            try:
+                tags |= set(info(u.name).tags)
+            except Exception:
+                continue
+        return tags
+
     def select_card(self, strategy: str, state: BattleState) -> Optional[HandCard]:
         # Unknown cards score as cost 3 — never let cost=None bypass the elixir gate.
         affordable = [(c, (info(c.name).cost or 3)) for c in state.hand]
@@ -289,13 +302,26 @@ class TacticalReflexPolicy:
         # Spells never answer cycle/push/build. On defend they only fire into a real multi-body pile —
         # single-target chip (empty fireball at a tower) is wasted elixir.
         threat_count = self._real_threat_count(state)
-        if strategy.startswith("defend"):
+        is_defend = strategy.startswith("defend")
+        if is_defend:
             if threat_count < 2:
                 ready_cards = [c for c in ready_cards if info(c.name).kind != "spell"]
         else:
             ready_cards = [c for c in ready_cards if info(c.name).kind != "spell"]
         if not ready_cards:
             return None
+
+        enemy_tags = self._enemy_threat_tags(state) if is_defend else set()
+        # Prefer tag from card DB; fall back to a known-air name list for weak/confident reads.
+        _AIR_NAMES = frozenset({
+            "minions", "minion_horde", "bats", "balloon", "baby_dragon",
+            "lava_hound", "inferno_dragon", "mega_minion", "night_witch", "witch",
+        })
+        air_threat = "flying" in enemy_tags or any(
+            u.owner == "enemy" and u.name in _AIR_NAMES for u in state.units
+        )
+        swarm_threat = "swarm" in enemy_tags or threat_count >= 3
+        tank_threat = bool(enemy_tags & {"tank", "win_condition", "building_only"})
 
         # Strategy-driven card scoring
         best_card = None
@@ -307,7 +333,7 @@ class TacticalReflexPolicy:
             tags = c_info.tags
             score = 10.0
 
-            if strategy in ["defend_left", "defend_right", "defend_centre"]:
+            if is_defend:
                 # Defend against threats
                 if "splash" in tags:
                     score += 25.0  # Wipes swarms
@@ -323,6 +349,25 @@ class TacticalReflexPolicy:
                     score += 18.0  # Distracts single-target tanks
                 if "building_only" in tags:
                     score -= 30.0  # Win condition cannot hit defenders
+
+                # Unit-aware match: answer the actual body in front of us
+                if air_threat and ("hits_air" in tags or "anti_air" in tags):
+                    score += 30.0
+                elif air_threat and c_info.kind == "spell" and threat_count >= 2:
+                    score += 22.0  # arrows/minions cluster
+                if swarm_threat and "splash" in tags:
+                    score += 20.0
+                elif swarm_threat and c_info.kind == "spell" and threat_count >= 3:
+                    score += 18.0
+                if tank_threat and ("mini_tank" in tags or "tank" in tags or "high_damage" in tags or "building_only" not in tags):
+                    # distract tank with a body + high DPS behind tower
+                    if "mini_tank" in tags or "tank" in tags:
+                        score += 15.0
+                    if "ranged" in tags or "high_damage" in tags or "medium_damage" in tags:
+                        score += 10.0
+                # Anti-synergy: ground-only melee into pure air threat wastes the drop
+                if air_threat and not ({"hits_air", "anti_air"} & tags) and "swarm" not in tags:
+                    score -= 20.0
 
             elif strategy.startswith("counter_push"):
                 if "tank" in tags or "mini_tank" in tags:
