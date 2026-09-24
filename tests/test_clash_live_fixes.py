@@ -12,7 +12,7 @@ from clash_jev.hand import (
 )
 from clash_jev.perception import Layout, Perception, _TOWER_BAR_COLOUR, to_reference
 from clash_jev.state import BattleState, HandCard, LaneView
-from phone_pilot import clash_max_idle
+from phone_pilot import clash_max_idle, clash_blind_force_action
 
 
 def make_state(
@@ -59,22 +59,27 @@ class UnknownPreferenceTests(unittest.TestCase):
         self.assertIsNotNone(card)
         self.assertEqual(card.name, "knight")
 
-    def test_unknown_only_when_no_known_ready(self):
+    def test_unknown_blocked_below_cost_floor(self):
+        # Unknown assumes cost 4 — elixir 3 must wait, not blind-deploy into a toast.
         state = make_state(
             elixir=3,
             hand=[
                 HandCard(0, "unknown", True),
                 HandCard(1, "giant", True),  # cost 5 > elixir 3
-                HandCard(2, "fireball", True),
+                HandCard(2, "fireball", True),  # cost 4 > elixir 3
             ],
         )
-        # defend with empty board strips spells; giant unaffordable → unknown is the floor
+        self.assertIsNone(self.policy.select_card("cycle", state))
+        self.assertIsNone(self.policy.select_card("defend_centre", state))
+
+    def test_unknown_only_when_no_known_ready(self):
+        # defend with multi-body; giant unaffordable at 4 → unknown is the floor once elixir >= 4
         state = make_state(
-            elixir=3,
+            elixir=4,
             hand=[
                 HandCard(0, "unknown", True),
-                HandCard(1, "giant", True),
-                HandCard(2, "fireball", True),
+                HandCard(1, "giant", True),  # cost 5 > elixir 4
+                HandCard(2, "arrows", True),  # stripped on empty-ish / not preferred
             ],
             left=LaneView(enemy_on_my_side=3),
             right=LaneView(enemy_on_my_side=1),
@@ -91,15 +96,20 @@ class UnknownPreferenceTests(unittest.TestCase):
             ),
         )
         card = self.policy.select_card("defend_centre", state)
-        # fireball (spell) may fire into multi-body defend; unknown only if nothing else ready
         self.assertIsNotNone(card)
         if card.name == "unknown":
             self.assertFalse(
-                any(c.name != "unknown" and ( __import__("clash_jev.cards", fromlist=["info"]).info(c.name).cost or 3) <= 3 and c.ready for c in state.hand),
-                "a known ready card was available",
+                any(
+                    c.name != "unknown"
+                    and TacticalReflexPolicy._assumed_cost(c.name) <= 4
+                    and c.ready
+                    and c.name != "giant"
+                    for c in state.hand
+                ),
+                "a known ready affordable card was available",
             )
         else:
-            self.assertNotEqual(card.name, "unknown")
+            self.assertNotEqual(card.name, "giant")
 
     def test_all_unknown_still_returns_something(self):
         state = make_state(
@@ -296,6 +306,29 @@ class ClashMaxIdleGateTests(unittest.TestCase):
             2.50,
         )
 
+    def test_high_urgency_below_floor_hard_holds(self):
+        # Elixir < 4: adapter wait means nothing affordable — never force into a toast.
+        self.assertEqual(
+            clash_max_idle(
+                action_name="wait",
+                strat="defend_right",
+                phase="in_battle",
+                threat_urgency=0.90,
+                elixir=2,
+            ),
+            9999.0,
+        )
+        self.assertEqual(
+            clash_max_idle(
+                action_name="wait",
+                strat="push_right",
+                phase="in_battle",
+                threat_urgency=0.55,
+                elixir=3,
+            ),
+            9999.0,
+        )
+
     def test_main_menu_and_game_over_short(self):
         self.assertEqual(
             clash_max_idle(
@@ -332,6 +365,92 @@ class ClashMaxIdleGateTests(unittest.TestCase):
                 elixir=3,
             ),
             5.50,
+        )
+
+
+class BlindForceElixirGateTests(unittest.TestCase):
+    """Last-resort idle promotion must never tap a card slot below the cost floor."""
+
+    def test_low_elixir_stays_wait(self):
+        for e in (0, 1, 2, 3):
+            self.assertEqual(
+                clash_blind_force_action(
+                    strat="defend_right",
+                    phase="in_battle",
+                    threat_urgency=0.9,
+                    nearest_threat=object(),
+                    elixir=e,
+                    total_actions=10,
+                ),
+                "wait",
+                f"elixir={e}",
+            )
+
+    def test_save_elixir_never_forces(self):
+        for strat in ("save_elixir", "hold_elixir_for_threat"):
+            self.assertEqual(
+                clash_blind_force_action(
+                    strat=strat,
+                    phase="in_battle",
+                    threat_urgency=0.9,
+                    nearest_threat=object(),
+                    elixir=8,
+                    total_actions=1,
+                ),
+                "wait",
+            )
+
+    def test_threat_above_floor_deploys_center(self):
+        self.assertEqual(
+            clash_blind_force_action(
+                strat="defend_right",
+                phase="in_battle",
+                threat_urgency=0.55,
+                nearest_threat=object(),
+                elixir=5,
+                total_actions=3,
+            ),
+            "deploy_defense_center",
+        )
+
+    def test_calm_above_floor_alternates_lanes(self):
+        self.assertEqual(
+            clash_blind_force_action(
+                strat="cycle",
+                phase="in_battle",
+                threat_urgency=0.1,
+                nearest_threat=None,
+                elixir=6,
+                total_actions=4,
+            ),
+            "deploy_card_right",
+        )
+        self.assertEqual(
+            clash_blind_force_action(
+                strat="cycle",
+                phase="in_battle",
+                threat_urgency=0.1,
+                nearest_threat=None,
+                elixir=6,
+                total_actions=5,
+            ),
+            "deploy_card_left",
+        )
+
+    def test_menu_phases_not_battle_deploys(self):
+        self.assertEqual(
+            clash_blind_force_action(
+                strat="", phase="main_menu", threat_urgency=0.0,
+                nearest_threat=None, elixir=5, total_actions=0,
+            ),
+            "start_battle",
+        )
+        self.assertEqual(
+            clash_blind_force_action(
+                strat="", phase="game_over", threat_urgency=0.0,
+                nearest_threat=None, elixir=5, total_actions=0,
+            ),
+            "confirm_ok",
         )
 
 

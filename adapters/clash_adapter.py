@@ -319,15 +319,26 @@ class TacticalReflexPolicy:
                 continue
         return tags
 
+    @staticmethod
+    def _assumed_cost(card_name: str) -> int:
+        """Conservative elixir cost for gate checks.
+
+        Unknown slots can hold any card in the deck; floor 4 (not 3) so a
+        blind unknown never opens the gate into a cost-5 "Not enough Elixir" toast.
+        """
+        if card_name == "unknown":
+            return 4
+        return info(card_name).cost or 3
+
     def select_card(self, strategy: str, state: BattleState) -> Optional[HandCard]:
-        # Unknown cards score as cost 3 — never let cost=None bypass the elixir gate.
-        affordable = [(c, (info(c.name).cost or 3)) for c in state.hand]
+        # Unknown cards score as cost 4 — never let cost=None bypass the elixir gate.
+        affordable = [(c, self._assumed_cost(c.name)) for c in state.hand]
         ready_cards = [c for c, cost in affordable if c.ready and cost <= state.elixir]
         if not ready_cards:
             ready_cards = [c for c, cost in affordable if cost <= state.elixir]
         if not ready_cards:
             return None
-        # Prefer identified cards: an unknown slot is a blind deploy (cost assumed 3).
+        # Prefer identified cards: an unknown slot is a blind deploy (cost assumed 4).
         # Only fall through to unknown when no known ready card is affordable.
         known_ready = [c for c in ready_cards if c.name != "unknown"]
         if known_ready:
@@ -768,10 +779,10 @@ class ClashBattleAdapter:
             pass
 
         if not hand_cards or len(hand_cards) < 4:
-            # Fallback: create 4 slots with affordable status
+            # Fallback: create 4 slots; ready tracks the unknown cost floor (4).
             hand_cards = []
             for slot in range(4):
-                hand_cards.append(HandCard(slot=slot, name="unknown", ready=(elixir >= 3)))
+                hand_cards.append(HandCard(slot=slot, name="unknown", ready=(elixir >= 4)))
         elif any(c.name == "unknown" for c in hand_cards):
             # Live bank gap → streak into a canary-guarded teach (raw device frame).
             try:

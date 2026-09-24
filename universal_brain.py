@@ -2,10 +2,11 @@
 Universal Jev / Laya System One Brain for Jev-GamePilot.
 Combines:
 1. High-speed local Laya decision engine (convaiinnovations/laya) for sub-30ms offline inference.
-2. TypeSafe Jev System One SDK cloud API (jev-latest) as robust online fallback.
-3. Keyless classifier.dev fallback for zero-config environments (circuit-broken on hard HTTP failures).
-4. Intelligent spatial & aerodynamic reflex actuator (no blind defaults; altitude & lane aware).
-5. Continuous async worker for 60+ FPS lock-free gameplay.
+2. Local LLM2Jev Transformers backend (LLM2JEV_MODEL) for offline Choice/Score/Noul arbitration.
+3. TypeSafe Jev System One SDK cloud API (jev-latest) as robust online fallback.
+4. Keyless classifier.dev fallback for zero-config environments (circuit-broken on hard HTTP failures).
+5. Intelligent spatial & aerodynamic reflex actuator (no blind defaults; altitude & lane aware).
+6. Continuous async worker for 60+ FPS lock-free gameplay.
 """
 
 import json
@@ -49,6 +50,23 @@ try:
 except ImportError:
     pass
 
+# Local LLM2Jev Transformers backend (CPU, LLM2JEV_MODEL env path / HF id).
+# Aliased to avoid colliding with typesafe_sdk Choice/Score/Noul.
+_LLM2JEV_AVAILABLE = False
+try:
+    from llm2jev import (
+        Choice as L2JChoice,
+        JevRequest as L2JJevRequest,
+        LLM2Jev as L2JEngine,
+        Noul as L2JNoul,
+        Score as L2JScore,
+        TransformersBackend as L2JTransformersBackend,
+    )
+    _LLM2JEV_AVAILABLE = True
+except ImportError:
+    L2JChoice = L2JScore = L2JNoul = None
+    L2JJevRequest = L2JEngine = L2JTransformersBackend = None
+
 # Try importing ClashBattleAdapter
 _CLASH_ADAPTER_AVAILABLE = False
 try:
@@ -85,6 +103,11 @@ class UniversalBrain:
         self.laya_agent = None
         self.laya_loading = False
         self._laya_tried = False
+        self.llm2jev_model = os.getenv("LLM2JEV_MODEL", "").strip()
+        self.llm2jev_engine = None
+        self.llm2jev_loading = False
+        self._llm2jev_tried = False
+        self._llm2jev_lock = threading.Lock()
         self.clash_adapter = ClashBattleAdapter() if _CLASH_ADAPTER_AVAILABLE else None
         self.coc_adapter = CocRaidAdapter() if _COC_ADAPTER_AVAILABLE else None
         self.brawl_adapter = BrawlMatchAdapter() if _BRAWL_ADAPTER_AVAILABLE else None
@@ -108,6 +131,38 @@ class UniversalBrain:
 
         # Attempt background local Laya load
         self._start_laya_loader()
+        # Background LLM2Jev load only when LLM2JEV_MODEL is set (opt-in).
+        self._start_llm2jev_loader()
+
+    def _start_llm2jev_loader(self):
+        """Background-loads LLM2Jev Transformers backend when LLM2JEV_MODEL is set."""
+        if not _LLM2JEV_AVAILABLE or not self.llm2jev_model or self._llm2jev_tried:
+            return
+
+        def loader():
+            self._llm2jev_tried = True
+            self.llm2jev_loading = True
+            try:
+                os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+                os.environ["HF_HUB_DISABLE_XET"] = "1"
+                os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+                path = self.llm2jev_model
+                if not os.path.isdir(path):
+                    from huggingface_hub import snapshot_download
+
+                    path = snapshot_download(path)
+                backend = L2JTransformersBackend(path, batch_size=16)
+                engine = L2JEngine(backend=backend)
+                with self._lock:
+                    self.llm2jev_engine = engine
+                    self.llm2jev_model = path
+            except Exception:
+                with self._lock:
+                    self.llm2jev_engine = None
+            finally:
+                self.llm2jev_loading = False
+
+        threading.Thread(target=loader, daemon=True, name="LLM2JevLoader").start()
 
     def _start_laya_loader(self):
         """Asynchronously attempts to load local Laya model weights without network downloads."""
@@ -196,10 +251,12 @@ class UniversalBrain:
                 self.last_decision = laya_res
             return
 
-        # Secondary opinion / Escalation: Query Jev System One (Cloud SDK).
-        # classifier.dev is dead (persistent HTTP 403) — circuit-broken, not retried.
+        # Secondary opinion / Escalation: local LLM2Jev first (offline),
+        # then TypeSafe cloud, then classifier.dev (circuit-broken on 403).
         jev_res = None
-        if self.client is not None and os.getenv("TYPESAFE_API_KEY"):
+        if self.llm2jev_engine is not None:
+            jev_res = self._query_local_llm2jev(profile, scene)
+        if not jev_res and self.client is not None and os.getenv("TYPESAFE_API_KEY"):
             jev_res = self._query_typesafe_sdk(profile, scene)
         if not jev_res and not self._classifier_dead:
             jev_res = self._query_classifier_dev(profile, scene)
@@ -251,7 +308,9 @@ class UniversalBrain:
             return laya_res
 
         jev_res = None
-        if self.client is not None and os.getenv("TYPESAFE_API_KEY"):
+        if self.llm2jev_engine is not None:
+            jev_res = self._query_local_llm2jev(profile, scene)
+        if not jev_res and self.client is not None and os.getenv("TYPESAFE_API_KEY"):
             jev_res = self._query_typesafe_sdk(profile, scene)
         if not jev_res and not self._classifier_dead:
             jev_res = self._query_classifier_dev(profile, scene)
@@ -448,6 +507,81 @@ class UniversalBrain:
             }
         except Exception as e:
             return None
+
+    def _query_local_llm2jev(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Optional[Dict[str, Any]]:
+        """Local LLM2Jev Transformers backend (same Choice/Score/Noul shape as cloud).
+
+        CPU eval is ~50-70s for a full question set — non-blocking for the pilot
+        (async worker only). Single-flight: concurrent calls return None immediately.
+        """
+        engine = self.llm2jev_engine
+        if engine is None:
+            return None
+        if not self._llm2jev_lock.acquire(blocking=False):
+            return None
+        t0 = time.perf_counter()
+        try:
+            situation = self._build_verbal_state(profile, scene)
+            criteria = {
+                action.name: action.description for action in profile.actions
+            }
+            if "wait" not in criteria and profile.category != "clicker":
+                criteria["wait"] = "Hold course; horizon clear"
+
+            questions = {
+                "tactical_action": L2JChoice(
+                    instructions=f"Select the optimal immediate maneuver in '{profile.name}' to evade hazards and survive.",
+                    criteria=criteria,
+                ),
+                "threat_severity": L2JScore(
+                    instructions="Rate immediate collision urgency on a scale from 0 to 4",
+                    criteria=[
+                        "0: Safe - Clear horizon",
+                        "1: Low - Distant hazard",
+                        "2: Moderate - Approaching action threshold",
+                        "3: High - Critical reaction zone",
+                        "4: Critical - Imminent impact",
+                    ],
+                ),
+                "is_urgent_reflex": L2JNoul(
+                    instructions="Should an immediate evasive maneuver be triggered right now?"
+                ),
+            }
+            request = L2JJevRequest(
+                state=situation,
+                model=self.llm2jev_model,
+                questions=questions,
+            )
+            resp = engine.evaluate(request)
+            latency = (time.perf_counter() - t0) * 1000.0
+
+            ans = resp.answers
+            action_choice = getattr(
+                ans.get("tactical_action"), "choice", None
+            ) or profile.actions[0].name
+            action_choice = self.coerce_action_name(profile, action_choice, scene)
+            action_conf = float(getattr(ans.get("tactical_action"), "confidence", 0.9))
+            danger_raw = float(getattr(ans.get("threat_severity"), "score", 2.0))
+            danger_normalized = min(1.0, danger_raw / 4.0)
+
+            target_coords = None
+            if scene.best_target:
+                target_coords = (scene.best_target.click_x, scene.best_target.click_y)
+
+            return {
+                "action": action_choice,
+                "threat_score": round(danger_normalized, 2),
+                "confidence": round(action_conf, 3),
+                "latency_ms": round(latency, 1),
+                "source": "local_llm2jev",
+                "target_coords": target_coords,
+            }
+        except Exception:
+            return None
+        finally:
+            self._llm2jev_lock.release()
 
     def _query_typesafe_sdk(
         self, profile: GameProfile, scene: UniversalSceneState

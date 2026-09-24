@@ -56,10 +56,45 @@ def clash_max_idle(
     if adapter_wait and threat_urgency < 0.40:
         return 9999.0
     if adapter_wait:
+        # Finite pressure timeout only when we can actually pay for a play.
+        # Below the blind-safe floor the adapter's wait means "nothing
+        # affordable" — trust it instead of force-tapping into a toast.
+        if elixir < 4:
+            return 9999.0
         return 2.50
     if no_play or elixir < 5:
         return 5.50
     return default
+
+
+def clash_blind_force_action(
+    *,
+    strat: str,
+    phase: str,
+    threat_urgency: float,
+    nearest_threat: object,
+    elixir: int,
+    total_actions: int,
+) -> str:
+    """Last-resort action when the adapter returned wait and idle expired.
+
+    Never blind-taps a card slot below elixir 4: the hand may be all 4-5 cost
+    cards, and slot rotation picks blindly — that was the live
+    "Not enough Elixir!" toast path.
+    """
+    if phase == "main_menu":
+        return "start_battle"
+    if phase == "game_over":
+        return "confirm_ok"
+    if phase not in ("in_battle", "active", ""):
+        return "wait"
+    if strat in {"save_elixir", "hold_elixir_for_threat"}:
+        return "wait"
+    if elixir < 4:
+        return "wait"
+    if threat_urgency >= 0.40 and nearest_threat is not None:
+        return "deploy_defense_center"
+    return "deploy_card_right" if (total_actions % 2 == 0) else "deploy_card_left"
 
 
 class PhoneGamePilot:
@@ -277,18 +312,14 @@ class PhoneGamePilot:
                         elif "clash" in self.profile.id:
                             # Blind slot-rotate deploy only as last resort when adapter gave nothing.
                             strat = str(decision.get("strategy") or "")
-                            if strat in {"save_elixir", "hold_elixir_for_threat"} and phase in ("in_battle", "active", ""):
-                                action_name = "wait"
-                            elif phase in ("in_battle", "active", ""):
-                                if scene.threat_urgency >= 0.40 and scene.nearest_threat is not None:
-                                    action_name = "deploy_defense_center"
-                                else:
-                                    # Alternate lanes — no left-bridge monoculture.
-                                    action_name = "deploy_card_right" if (self.total_actions % 2 == 0) else "deploy_card_left"
-                            elif phase == "main_menu":
-                                action_name = "start_battle"
-                            elif phase == "game_over":
-                                action_name = "confirm_ok"
+                            action_name = clash_blind_force_action(
+                                strat=strat,
+                                phase=phase,
+                                threat_urgency=float(getattr(scene, "threat_urgency", 0.0) or 0.0),
+                                nearest_threat=getattr(scene, "nearest_threat", None),
+                                elixir=int(getattr(scene, "elixir", 0) or 0),
+                                total_actions=self.total_actions,
+                            )
                         elif "earntodie" in self.profile.id:
                             action_name = "accelerate"
                         elif "fruit" in self.profile.id:
