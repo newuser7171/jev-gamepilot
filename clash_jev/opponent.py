@@ -26,6 +26,15 @@ class OpponentElixir:
         self.elixir = START_ELIXIR
         self._last_elapsed = 0.0
         self._known: list[Unit] = []
+        # Unique enemy card ids observed this match — deck tracking for hold/cycle reads.
+        self.seen_cards: dict[str, int] = {}
+
+    def reset(self) -> None:
+        """New match: elixir book and seen-deck memory both clear."""
+        self.elixir = START_ELIXIR
+        self._last_elapsed = 0.0
+        self._known = []
+        self.seen_cards = {}
 
     def update(self, elapsed_s: float, elixir_rate: str, units: tuple[Unit, ...]) -> float:
         self.elixir += max(0.0, elapsed_s - self._last_elapsed) * _RATE[elixir_rate] / SECONDS_PER_ELIXIR
@@ -46,6 +55,9 @@ class OpponentElixir:
             else:
                 group.append(unit)
         for card in cards:
+            named = next((unit.name for unit in card if unit.name), None)
+            if named:
+                self.seen_cards[named] = self.seen_cards.get(named, 0) + 1
             cost = next((info(unit.name).cost for unit in card if unit.name and info(unit.name).cost), None)
             self.elixir = max(0.0, self.elixir - (cost or AVERAGE_CARD_COST))
 

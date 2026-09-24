@@ -176,6 +176,11 @@ class TacticalReflexPolicy:
             return "push_left"
         if state.towers.enemy_right == 0 and state.towers.enemy_left != 0:
             return "push_right"
+        # Commit to a melted lane even mid-game — splitting damage never takes a tower.
+        if not force_kill and left_hp < right_hp - 0.20:
+            return "push_left"
+        if not force_kill and right_hp < left_hp - 0.20:
+            return "push_right"
         if force_kill or state.elapsed_s >= 150.0:
             if right_hp < left_hp - 0.05:
                 return "push_right"
@@ -222,20 +227,37 @@ class TacticalReflexPolicy:
                     return "defend_right"
                 if left_threats > 0 and right_threats > 0:
                     return "defend_centre"
-                if left_threats > 0:
+                # Ground building-only win conditions (Hog, Giant, RG) ignore defenders —
+                # pull them centre so both princess towers shoot.
+                if self._needs_centre_pull(state):
+                    return "defend_centre"
+                # Weighted side: counts alone miss a fat tank vs two skeletons.
+                wl, wr = self._weighted_threat_sides(state)
+                if left_threats > 0 and wl + 0.5 >= wr:
                     return "defend_left"
                 if right_threats > 0:
                     return "defend_right"
+                if left_threats > 0:
+                    return "defend_left"
+                if bridge_left > 0 and bridge_left >= bridge_right:
+                    return "defend_left"
+                if bridge_right > 0:
+                    return "defend_right"
                 return "defend_centre"
 
-        # 3. Counter-push conversion (defended in last ~10s, survivors still up)
-        if state.elapsed_s - self._last_defend_elapsed <= 10.0:
+        # 3. Counter-push conversion (defended in last ~10s, survivors still up).
+        # Double/triple elixir converts sooner — the refill is too fast to idle.
+        window = 10.0 if state.elixir_rate == "single" else 14.0
+        if state.elapsed_s - self._last_defend_elapsed <= window:
             counter_floor = max(3, save_below - 2)
-            if state.left.mine_on_my_side > 0 or state.left.mine_at_bridge > 0:
+            mine_l = state.left.mine_on_my_side + state.left.mine_at_bridge
+            mine_r = state.right.mine_on_my_side + state.right.mine_at_bridge
+            if mine_l > 0 or mine_r > 0:
                 if state.elixir >= counter_floor:
-                    return "counter_push_left"
-            if state.right.mine_on_my_side > 0 or state.right.mine_at_bridge > 0:
-                if state.elixir >= counter_floor:
+                    if mine_l > 0 and mine_r > 0:
+                        return "counter_push_left" if mine_l >= mine_r else "counter_push_right"
+                    if mine_l > 0:
+                        return "counter_push_left"
                     return "counter_push_right"
 
         # 4. Opening (first 12s): take the river, never sit on a full hand
@@ -298,6 +320,108 @@ class TacticalReflexPolicy:
         return self._attack_lane(state, force_kill=endgame)
 
     @staticmethod
+    def _unit_threat_score(unit: Unit) -> float:
+        """Danger of one enemy body: depth toward our tower × tankiness × job."""
+        if unit.y < 0.40:
+            return 0.0  # still parked on their half
+        score = 0.6
+        if unit.y >= 0.445:
+            score += 1.4 + (unit.y - 0.445) * 4.0
+        elif unit.y >= 0.40:
+            score += 0.7  # bridge band
+        if unit.health is not None and unit.health < 1.0:
+            score *= max(0.25, float(unit.health))
+        if unit.name:
+            try:
+                tags = info(unit.name).tags
+                arch = archetypes(unit.name)
+            except Exception:
+                return score
+            if "win_condition" in tags:
+                score += 2.2
+            if "building_only" in tags:
+                score += 1.6
+            if "tank" in tags:
+                score += 1.1
+            if "swarm" in tags:
+                score += 0.7
+            if "flying" in tags:
+                score += 0.4
+            if "high damage" in arch or "tank buster" in arch:
+                score += 0.9
+        return score
+
+    @classmethod
+    def _weighted_threat_sides(cls, state: BattleState) -> Tuple[float, float]:
+        left = right = 0.0
+        # Same-name bodies from one card die together to splash — full score for the
+        # first, steep falloff after, so 3 skeletons never out-weigh a giant.
+        seen_left: dict[str, int] = {}
+        seen_right: dict[str, int] = {}
+        for unit in state.units:
+            if unit.owner != "enemy":
+                continue
+            s = cls._unit_threat_score(unit)
+            key = unit.name or f"@{unit.x:.2f}"
+            if unit.x < 0.5:
+                n = seen_left.get(key, 0)
+                seen_left[key] = n + 1
+                left += s * (1.0 if n == 0 else 0.25 ** n)
+            else:
+                n = seen_right.get(key, 0)
+                seen_right[key] = n + 1
+                right += s * (1.0 if n == 0 else 0.25 ** n)
+        left += 0.4 * (state.left.enemy_on_my_side + state.left.enemy_at_bridge)
+        right += 0.4 * (state.right.enemy_on_my_side + state.right.enemy_at_bridge)
+        return left, right
+
+    @staticmethod
+    def _needs_centre_pull(state: BattleState) -> bool:
+        """Ground building-only bodies walk past defenders — centre-pull them."""
+        for unit in state.units:
+            if unit.owner != "enemy" or unit.y < 0.40 or not unit.name:
+                continue
+            try:
+                tags = info(unit.name).tags
+            except Exception:
+                continue
+            if "flying" in tags:
+                continue
+            if "building_only" in tags or ("win_condition" in tags and "tank" in tags):
+                return True
+        return False
+
+    def _threat_elixir_value(self, state: BattleState) -> float:
+        """Sum of identified enemy costs on our half — elixir-trade floor for answers."""
+        total = 0.0
+        seen: set[int] = set()
+        for unit in state.units:
+            if unit.owner != "enemy" or unit.y < 0.40 or not unit.name:
+                continue
+            try:
+                cost = info(unit.name).cost
+            except Exception:
+                cost = None
+            if cost is None:
+                total += 3.0
+            else:
+                # Swarm badges from one card share identity — count once per name cluster.
+                key = hash(unit.name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                total += float(cost)
+        lane_sum = (
+            state.left.enemy_on_my_side
+            + state.right.enemy_on_my_side
+            + state.left.enemy_at_bridge
+            + state.right.enemy_at_bridge
+        )
+        if total <= 0 and lane_sum:
+            total = min(6.0, 2.0 * float(lane_sum))
+        return total
+
+    @staticmethod
     def _real_threat_count(state: BattleState) -> int:
         return (
             state.left.enemy_on_my_side
@@ -351,12 +475,40 @@ class TacticalReflexPolicy:
         if is_defend:
             if threat_count < 2:
                 ready_cards = [c for c in ready_cards if info(c.name).kind != "spell"]
+            # Win conditions / building-only bodies cannot fight defenders — never a defend answer
+            # while any fighting card is ready.
+            fighters = [
+                c
+                for c in ready_cards
+                if not (
+                    "win_condition" in info(c.name).tags
+                    or "building_only" in info(c.name).tags
+                )
+            ]
+            if fighters:
+                ready_cards = fighters
         else:
             ready_cards = [c for c in ready_cards if info(c.name).kind != "spell"]
+            if strategy == "cycle":
+                # Never cycle a win-condition tank when a cheap known card is ready —
+                # live logs showed giant-on-cycle spam burning 5 elixir for no pressure.
+                # Same for buildings/huts: they are commitment, not cycle.
+                cheap = [
+                    c
+                    for c in ready_cards
+                    if (info(c.name).cost or 3) <= 3 and info(c.name).kind == "troop"
+                ]
+                if cheap:
+                    ready_cards = cheap
+                else:
+                    troops_only = [c for c in ready_cards if info(c.name).kind == "troop"]
+                    if troops_only:
+                        ready_cards = troops_only
         if not ready_cards:
             return None
 
         enemy_tags = self._enemy_threat_tags(state) if is_defend else set()
+        threat_value = self._threat_elixir_value(state) if is_defend else 0.0
         # Prefer tag from card DB; fall back to a known-air name list for weak/confident reads.
         _AIR_NAMES = frozenset({
             "minions", "minion_horde", "bats", "balloon", "baby_dragon",
@@ -382,6 +534,8 @@ class TacticalReflexPolicy:
                 # Defend against threats
                 if "splash" in tags:
                     score += 25.0  # Wipes swarms
+                if "defensive_building" in tags:
+                    score += 30.0  # Cannon/Tesla pull and soak win conditions
                 if c_info.kind == "spell" and threat_count >= 3:
                     score += 20.0  # Area spell into a stacked push
                 if "mini_tank" in tags or "tank" in tags:
@@ -392,13 +546,13 @@ class TacticalReflexPolicy:
                     score += 12.0
                 if "swarm" in tags:
                     score += 18.0  # Distracts single-target tanks
-                if "building_only" in tags:
-                    score -= 30.0  # Win condition cannot hit defenders
+                if "building_only" in tags or "win_condition" in tags:
+                    score -= 40.0  # Cannot hit defenders
 
                 # Unit-aware match: answer the actual body in front of us
                 if air_threat and ("hits_air" in tags or "anti_air" in tags):
                     score += 30.0
-                elif air_threat and c_info.kind == "spell" and threat_count >= 2:
+                elif air_threat and c_info.kind == "spell" and threat_value >= 3 and threat_count >= 2:
                     score += 22.0  # arrows/minions cluster
                 if swarm_threat and "splash" in tags:
                     score += 20.0
@@ -413,6 +567,10 @@ class TacticalReflexPolicy:
                 # Anti-synergy: ground-only melee into pure air threat wastes the drop
                 if air_threat and not ({"hits_air", "anti_air"} & tags) and "swarm" not in tags:
                     score -= 20.0
+                # Elixir trade: do not answer a 2-elixir probe with a 5-elixir tank
+                # when a cheaper body exists. Overpay only if nothing else can hold.
+                if threat_value > 0 and cost > threat_value + 2:
+                    score -= (cost - threat_value - 2) * 10.0
 
             elif strategy.startswith("counter_push"):
                 if "tank" in tags or "mini_tank" in tags:
@@ -441,6 +599,10 @@ class TacticalReflexPolicy:
             elif strategy == "cycle":
                 # Cheapest troop in hand — spells already filtered out above
                 score += (10.0 - cost) * 5.0
+                if "win_condition" in tags or ("tank" in tags and "slow" in tags):
+                    score -= 50.0  # Giant/Golem are pressure, not cycle
+                if cost <= 2:
+                    score += 15.0
 
             # Prefer cards we can comfortably afford without hitting 0 elixir
             if state.elixir - cost >= 1:
@@ -457,10 +619,10 @@ class TacticalReflexPolicy:
         if not squares:
             return None
 
-        # 1. Spell: only a detected enemy body — never bare tower chip
+        # 1. Spell: only a detected enemy body — never bare tower chip.
+        # Aim at the densest cluster on the half that matters (defend → our side first).
         c_info = info(card.name)
         if c_info.kind == "spell":
-            # Troop targets are `enemy_<name>_<lane>_<i>`; towers are `left_enemy_tower` / `enemy_king_tower`.
             troop_targets = [
                 sq
                 for sq in squares
@@ -468,35 +630,54 @@ class TacticalReflexPolicy:
             ]
             if not troop_targets:
                 return None
-            # Prefer bodies already on our half / at the bridge (real defend value).
             on_my_half = [
                 sq
                 for sq in troop_targets
                 if "on your side" in sq.meaning or "at the bridge" in sq.meaning
             ]
-            return on_my_half[0] if on_my_half else troop_targets[0]
+            pool = on_my_half if on_my_half else troop_targets
+            if len(pool) == 1:
+                return pool[0]
+            # Centroid of pool members within fireball/arrows radius (~0.12 frame units).
+            best = pool[0]
+            best_hits = -1
+            for sq in pool:
+                hits = sum(
+                    1
+                    for other in troop_targets
+                    if abs(other.xy[0] - sq.xy[0]) <= 0.12 and abs(other.xy[1] - sq.xy[1]) <= 0.12
+                )
+                if hits > best_hits:
+                    best_hits = hits
+                    best = sq
+            return best
 
-        # 2. Defend Centre (golden pull pocket)
-        if strategy == "defend_centre":
+        # 2. Defend Centre (golden pull pocket) — preferred vs building-only WCs
+        if strategy == "defend_centre" or (
+            strategy.startswith("defend") and self._needs_centre_pull(state)
+        ):
             for sq in squares:
                 if sq.name == "centre_king_front":
                     return sq
                 if sq.name == "centre":
                     return sq
 
-        # 3. Defend Left / Right
+        # 3. Defend Left / Right — tower-front first; never meet the push at the bridge
+        # (bridge drops trade into their support and leak the pull).
         if strategy == "defend_left":
             for sq in squares:
                 if sq.name == "left_tower_front":
                     return sq
-                if sq.name == "left_bridge":
+            for sq in squares:
+                if sq.name in ("centre_king_front", "centre"):
                     return sq
 
         if strategy == "defend_right":
             for sq in squares:
                 if sq.name == "right_tower_front":
                     return sq
-                if sq.name == "right_bridge":
+            for sq in squares:
+                if sq.name in ("centre_king_front", "centre"):
                     return sq
 
         # 4. Build Push (backline spawn) — prefer the weaker enemy tower
@@ -596,6 +777,10 @@ class ClashBattleAdapter:
         self._push_counter = 0
         self._last_state = None
         self.learner.note_battle_start()
+        try:
+            self.perception.opponent.reset()
+        except Exception:
+            pass
         if self.tactical_policy is not None:
             self.tactical_policy.tune = self.learner.params
             self.tactical_policy._last_defend_elapsed = -999.0
