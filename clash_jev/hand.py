@@ -88,6 +88,11 @@ _CATALOG_HAND_IN_DECK_SCORE = 0.35
 _CATALOG_HAND_IN_DECK_LEAD = 0.005
 _CATALOG_HAND_ANY_SCORE = 0.45
 _CATALOG_HAND_ANY_LEAD = 0.02
+# In-deck bank hit with a solid score: greyed/washed hand art keeps the runner-up close, so a
+# thin lead must not dump a known deck card into unknown / catalog false-accept (golem, …).
+_HAND_IN_DECK_SCORE = 0.40
+# Any in-deck bank candidate at least this strong blocks a catalog *non-deck* override.
+_IN_DECK_NEAR = 0.30
 # Battle-deck grid on a 1080x2340 portrait frame (hunt3.png), scaled to any frame size.
 _DECK_REF_SIZE = (1080, 2340)
 _DECK_XS = (40, 300, 560, 820)
@@ -443,6 +448,7 @@ class HandReader:
 
     def read(self, frame: numpy.ndarray) -> tuple[HandCard, ...]:
         reference = _reference(frame)
+        deck = player_deck()
         hand = []
         for slot in range(4):
             if _is_empty(reference, slot):  # the slot is between cards: the new one has not landed yet
@@ -450,25 +456,37 @@ class HandReader:
                 continue
             name, score, lead = self.bank.match(_detail(reference, _slot_box(slot)), detail=True)
             known = score >= _DETAIL_MATCH and lead >= _MATCH_MARGIN
+            # Solid in-deck detail hit: thin lead must not fall through to a wrong catalog name.
+            if not known and name in deck and score >= _DETAIL_MATCH:
+                known = True
             shape = _shape(reference, _slot_box(slot))
+            bank_in_deck_near = name in deck and score >= _IN_DECK_NEAR
             if not known:
                 name, score, lead = self.bank.match(shape)
+                bank_in_deck_near = bank_in_deck_near or (name in deck and score >= _IN_DECK_NEAR)
                 known = score >= _HAND_MATCH and lead >= _MATCH_MARGIN
+                if not known and name in deck and score >= _HAND_IN_DECK_SCORE:
+                    known = True  # deck card, greyed art: score clears in-deck bar, lead is thin
             if not known:
                 name, score, lead = self.bank.match(shape, lower_half=True)
+                bank_in_deck_near = bank_in_deck_near or (name in deck and score >= _IN_DECK_NEAR)
                 known = score >= _LOWER_HALF_MATCH and lead >= _LOWER_HALF_MARGIN
+                if not known and name in deck and score >= _LOWER_HALF_MATCH:
+                    known = True
             if not known:
                 # Shape bank only knows taught cards. Official catalog names a loadout card
                 # that was never in player_deck / teach-deck when the crop is decisive.
                 cat_name, cat_score, cat_lead = self.catalog.match(reference, _slot_box(slot))
                 if cat_name is not None:
-                    in_deck = cat_name in player_deck()
+                    in_deck = cat_name in deck
                     if in_deck:
                         known = (
                             cat_score >= _CATALOG_HAND_IN_DECK_SCORE
                             and cat_lead >= _CATALOG_HAND_IN_DECK_LEAD
                         )
-                    else:
+                    elif not bank_in_deck_near:
+                        # No competent in-deck bank candidate: only then trust a confident
+                        # non-deck catalog read (real loadout change).
                         known = (
                             cat_score >= _CATALOG_HAND_ANY_SCORE
                             and cat_lead >= _CATALOG_HAND_ANY_LEAD

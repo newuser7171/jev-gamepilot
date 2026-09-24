@@ -168,6 +168,44 @@ class CatalogHandFallbackTests(unittest.TestCase):
         self.assertNotIn("skeletons", player_deck())
 
 
+class InDeckThinLeadTests(unittest.TestCase):
+    """Greyed hand art: solid in-deck bank score with a thin lead must stay known, and must
+    block a non-deck catalog false-accept (golem / flying_machine / …)."""
+
+    def _read(self, reader, bank_ret, catalog_ret):
+        with patch.object(reader.bank, "match", return_value=bank_ret), patch.object(
+            reader.catalog, "match", return_value=catalog_ret
+        ), patch.object(reader, "_read_next", return_value=None), patch(
+            "clash_jev.hand._is_empty", return_value=False
+        ), patch("clash_jev.hand._is_lit", return_value=True), patch(
+            "clash_jev.hand._reference", side_effect=lambda f: f
+        ), patch(
+            "clash_jev.hand._detail", return_value=numpy.zeros(224, dtype=numpy.float32)
+        ), patch(
+            "clash_jev.hand._shape", return_value=numpy.zeros(224, dtype=numpy.float32)
+        ):
+            return reader.read(numpy.zeros((633, 419, 3), dtype=numpy.uint8))
+
+    def test_in_deck_thin_lead_stays_known(self):
+        # Live pattern: fireball/giant/archers at 0.52-0.57 with lead < 0.08.
+        reader = HandReader()
+        hand = self._read(reader, ("knight", 0.55, 0.01), ("golem", 0.90, 0.50))
+        self.assertTrue(all(c.name == "knight" for c in hand), [c.name for c in hand])
+
+    def test_in_deck_near_blocks_non_deck_catalog(self):
+        # Bank has a competent in-deck near-miss (>= _IN_DECK_NEAR) but not enough for known;
+        # catalog must not promote a non-deck name over it.
+        reader = HandReader()
+        hand = self._read(reader, ("giant", 0.35, 0.10), ("flying_machine", 0.55, 0.10))
+        self.assertTrue(all(c.name == "unknown" for c in hand), [c.name for c in hand])
+
+    def test_confident_non_deck_catalog_still_wins_without_bank(self):
+        # Real loadout change: bank has no candidate, catalog may name a non-deck card.
+        reader = HandReader()
+        hand = self._read(reader, (None, 0.0, 1.0), ("skeletons", 0.52, 0.08))
+        self.assertTrue(all(c.name == "skeletons" for c in hand), [c.name for c in hand])
+
+
 class TowerBarPhoneGeometryTests(unittest.TestCase):
     """enemy_right must cover the measured phone pink bar; enemy hue must include 148-151."""
 
