@@ -79,6 +79,8 @@ class PhoneGamePilot:
         self.last_battle_launch_time = 0.0
         self.last_pkg_check_time = 0.0
         self.current_package = "Unknown"
+        # Consecutive confirm_ok dispatches; over limit → BACK escapes a missed dismiss.
+        self._confirm_ok_streak = 0
 
     def _resolve_initial_profile(self, profile_id: str) -> GameProfile:
         if self.auto_mode:
@@ -393,6 +395,21 @@ class PhoneGamePilot:
                         self.total_actions += 1
                         self.last_action_time = now
                         self.last_dispatched_action = action_name
+                        # confirm_ok death-spiral escape: hit tap misses (wrong overlay /
+                        # stale post_ok_pair) → 3000× loop in the wild. BACK every 8.
+                        if action_name == "confirm_ok":
+                            self._confirm_ok_streak += 1
+                            if self._confirm_ok_streak % 8 == 0:
+                                console.print(
+                                    f"[bold yellow]↩ [CONFIRM ESCAPE][/bold yellow] "
+                                    f"{self._confirm_ok_streak}× confirm_ok → BACK keyevent"
+                                )
+                                try:
+                                    self.adb.press_back()
+                                except Exception as be:
+                                    console.print(f"[red]BACK failed: {be}[/red]")
+                        else:
+                            self._confirm_ok_streak = 0
                         strat_str = f" | strat: {decision.get('strategy')}" if decision.get("strategy") else ""
                         card_str = f" | card: {decision.get('card_name')}" if decision.get("card_name") else ""
                         tile_str = f" -> {decision.get('square_name')}" if decision.get("square_name") else ""

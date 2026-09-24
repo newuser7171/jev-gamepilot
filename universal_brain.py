@@ -799,6 +799,24 @@ class UniversalBrain:
                         if not getattr(self, "_clash_battle_clock_armed", False):
                             self.clash_adapter.note_battle_start()
                             self._clash_battle_clock_armed = True
+                    # Stale-clock force-close: a multi-hour open battle is a stuck
+                    # start_time (hysteresis kept in_battle after real match ended).
+                    # Close as aborted, clear edge flags so next menu→battle re-arms.
+                    if (
+                        self.clash_adapter.learner.battle_open
+                        and (time.time() - self.clash_adapter.start_time) > 600.0
+                    ):
+                        self.clash_adapter.note_battle_end(getattr(scene, "raw_frame", None))
+                        self._clash_was_in_battle = False
+                        self._clash_battle_clock_armed = False
+                        return {
+                            "action": "wait",
+                            "threat_score": 0.0,
+                            "confidence": 0.99,
+                            "latency_ms": 0.2,
+                            "source": "stale_battle_force_closed",
+                            "target_coords": None,
+                        }
                     raw_frame = getattr(scene, "raw_frame", None)
                     if raw_frame is not None:
                         h, w = raw_frame.shape[:2]

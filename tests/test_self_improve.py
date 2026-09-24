@@ -1,6 +1,7 @@
 """Closed-loop self-improvement: param grid, UCB bandit, journal, canary teach, tempo offsets."""
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -153,6 +154,71 @@ class BanditRetuneTests(unittest.TestCase):
         self.assertIn("outcome", out)
         # Idempotent while closed — second call must not raise.
         self.assertIsNone(ad.note_battle_end(None))
+
+
+class StaleBattleClockTests(unittest.TestCase):
+    """Entry-60 regression: a 7.19h draw must never journal again."""
+
+    def setUp(self):
+        import tempfile
+        from adapters.clash_adapter import ClashBattleAdapter
+
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        self.ad = ClashBattleAdapter()
+        self.ad.learner = SelfImprover(
+            journal_path=tmp / "j.jsonl",
+            params_path=tmp / "p.json",
+        )
+        self.ad.tactical_policy.tune = self.ad.learner.params
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_seven_hour_clock_aborts_and_clamps_elapsed(self):
+        from adapters.clash_adapter import _MAX_BATTLE_ELAPSED_S
+
+        self.ad.note_battle_start()
+        # Simulate entry 60: start_time 7.19h ago, stale tower state claiming a draw.
+        self.ad.start_time = time.time() - (7.19 * 3600)
+        # Towers 1-1 would normally score a draw; stale clock must override to aborted.
+        draw_towers = Towers(enemy_left=0.0, enemy_right=1.0, my_left=0.0, my_right=1.0)
+        stale = make_state(elixir=5, elapsed_s=25899.9, towers=draw_towers)
+        self.ad._last_state = stale
+        out = self.ad.note_battle_end(None)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["outcome"], "aborted")
+        self.assertEqual(out["crowns"], [0, 0])
+        self.assertLessEqual(out["elapsed_s"], _MAX_BATTLE_ELAPSED_S)
+        self.assertGreater(out["elapsed_s"], 0.0)
+
+    def test_fresh_battle_keeps_real_outcome(self):
+        self.ad.note_battle_start()
+        self.ad._last_state = make_state(elixir=5, elapsed_s=120.0)
+        # Live results frame is None; towers default all-standing → aborted,
+        # but elapsed must be the real state value (not force-clamped).
+        out = self.ad.note_battle_end(None)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["elapsed_s"], 120.0)
+
+    def test_double_end_still_noop_after_stale_close(self):
+        self.ad.note_battle_start()
+        self.ad.start_time = time.time() - 3600.0
+        self.assertIsNotNone(self.ad.note_battle_end(None))
+        self.assertIsNone(self.ad.note_battle_end(None))
+
+
+class BackEscapeTests(unittest.TestCase):
+    def test_press_back_sends_keyevent_4(self):
+        from unittest.mock import MagicMock
+        from adapters.phone_adapter import AdbController
+
+        # Avoid real ADB device discovery — construct bare and stub shell.
+        with unittest.mock.patch.object(AdbController, "__init__", lambda self: None):
+            ctl = AdbController()
+            ctl._run_shell = MagicMock()
+            ctl.press_back()
+        ctl._run_shell.assert_called_once_with("input keyevent 4")
 
 
 class CrownOutcomeTests(unittest.TestCase):

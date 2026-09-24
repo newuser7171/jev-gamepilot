@@ -384,6 +384,10 @@ class AdbController:
         """Sends press-and-hold touch gesture for sustained gas throttle, power shots, or continuous beams."""
         self.swipe(x, y, x, y, duration_ms=duration_ms)
 
+    def press_back(self):
+        """Android BACK (keyevent 4) — escape hatch when confirm_ok taps miss a dismiss overlay."""
+        self._run_shell("input keyevent 4")
+
     def double_tap(self, x: int, y: int, delay_sec: float = 0.08):
         """Chains rapid double-tap (activates hoverboard shield, nitro bursts, revives)."""
         shell_script = f"input tap {int(x)} {int(y)} && sleep {delay_sec} && input tap {int(x)} {int(y)}"

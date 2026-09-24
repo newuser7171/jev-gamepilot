@@ -53,6 +53,10 @@ from clash_jev.learn import (
     teach_with_canaries,
 )
 
+# Clash Royale real max ≈ 3 min regular + ~2 min OT. Anything past this is a
+# stale battle clock (entry 60 was 7.19h), never a real match — abort it.
+_MAX_BATTLE_ELAPSED_S = 600.0
+
 
 class ClashCoordinateMapper:
     """
@@ -591,40 +595,62 @@ class ClashBattleAdapter:
 
         Outcome preference: post-game crown banners, then tower HP from the last
         in-battle state. No signal → aborted (never pollutes the bandit).
+        Wall-clock age past _MAX_BATTLE_ELAPSED_S forces aborted: a multi-hour
+        "match" is a stuck start_time, not a result worth learning from.
         """
         if not self.learner.battle_open:
             return None
         state = self._last_state
-        crowns = crowns_from_results_frame(frame_bgr)
-        if crowns is None and state is not None:
-            crowns = crowns_from_towers(state.towers)
-            # All standing and no results screen: unread, not a draw.
-            if crowns == (0, 0) and all(
-                v is None or float(v) > 0.0
-                for v in (
-                    state.towers.enemy_left,
-                    state.towers.enemy_right,
-                    state.towers.my_left,
-                    state.towers.my_right,
-                )
-            ):
-                # Still score from towers if anything was destroyed by kings; else abort.
-                king_down = any(
-                    v is not None and float(v) <= 0.0
-                    for v in (state.towers.enemy_king, state.towers.my_king)
-                )
-                if not king_down:
-                    crowns = None
-        if crowns is None:
-            outcome = "aborted"
-            crowns_out = (0, 0)
-            elapsed = state.elapsed_s if state else time.time() - self.start_time
-            behind = False
+        wall_age = time.time() - self.start_time
+        stale_clock = wall_age > _MAX_BATTLE_ELAPSED_S
+        if stale_clock:
+            # Stale clock: drop any tower-derived crowns (state may be hours old).
+            crowns = crowns_from_results_frame(frame_bgr)
+            if crowns is None:
+                outcome = "aborted"
+                crowns_out = (0, 0)
+                elapsed = _MAX_BATTLE_ELAPSED_S
+                behind = False
+            else:
+                # Live results frame is trustworthy even with a stale clock.
+                outcome = outcome_from_crowns(crowns)
+                crowns_out = crowns
+                elapsed = _MAX_BATTLE_ELAPSED_S
+                behind = False
         else:
-            outcome = outcome_from_crowns(crowns)
-            crowns_out = crowns
-            elapsed = state.elapsed_s if state else time.time() - self.start_time
-            behind = self.tactical_policy._behind(state) if state else False
+            crowns = crowns_from_results_frame(frame_bgr)
+            if crowns is None and state is not None:
+                crowns = crowns_from_towers(state.towers)
+                # All standing and no results screen: unread, not a draw.
+                if crowns == (0, 0) and all(
+                    v is None or float(v) > 0.0
+                    for v in (
+                        state.towers.enemy_left,
+                        state.towers.enemy_right,
+                        state.towers.my_left,
+                        state.towers.my_right,
+                    )
+                ):
+                    # Still score from towers if anything was destroyed by kings; else abort.
+                    king_down = any(
+                        v is not None and float(v) <= 0.0
+                        for v in (state.towers.enemy_king, state.towers.my_king)
+                    )
+                    if not king_down:
+                        crowns = None
+            if crowns is None:
+                outcome = "aborted"
+                crowns_out = (0, 0)
+                elapsed = state.elapsed_s if state else wall_age
+                behind = False
+            else:
+                outcome = outcome_from_crowns(crowns)
+                crowns_out = crowns
+                elapsed = state.elapsed_s if state else wall_age
+                behind = self.tactical_policy._behind(state) if state else False
+        # Final safety: never journal an absurd duration even if a path slipped through.
+        if elapsed > _MAX_BATTLE_ELAPSED_S:
+            elapsed = _MAX_BATTLE_ELAPSED_S
         rec = self.learner.note_battle_end(outcome, crowns_out, elapsed, behind=behind)
         if self.tactical_policy is not None:
             self.tactical_policy.tune = self.learner.params
