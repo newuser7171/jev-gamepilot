@@ -1,0 +1,23 @@
+{
+  "id": "unit_test_clone",
+  "name": "unit_test_clone",
+  "save_offset": 0,
+  "push_offset": -1,
+  "counter_willingness": 0.75,
+  "cycle_bias": 0.9,
+  "spell_eagerness": 0.2,
+  "opening_patience_s": 4.0,
+  "lane_bias": "balanced",
+  "aggression": 0.8,
+  "source": "cloned from hog_cycle",
+  "deck": [
+    "hog",
+    "ice_golem",
+    "musketeer",
+    "cannon",
+    "fireball",
+    "the_log",
+    "skeletons",
+    "ice_spirit"
+  ]
+}

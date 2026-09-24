@@ -1,0 +1,17 @@
+{
+  "id": "opp_test",
+  "name": "Opp",
+  "save_offset": 0,
+  "push_offset": 0,
+  "counter_willingness": 0.5,
+  "cycle_bias": 0.3,
+  "spell_eagerness": 0.0,
+  "opening_patience_s": 6.0,
+  "lane_bias": "balanced",
+  "aggression": 0.5,
+  "source": "",
+  "deck": [
+    "hog",
+    "fireball"
+  ]
+}

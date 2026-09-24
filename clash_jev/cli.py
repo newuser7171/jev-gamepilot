@@ -70,7 +70,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="clash-jev")
     parser.add_argument(
         "command",
-        choices=["serve", "snap", "play", "add-card", "teach-deck", "label", "train", "publish"],
+        choices=["serve", "snap", "play", "add-card", "teach-deck", "label", "train", "publish", "style"],
     )
     parser.add_argument(
         "name",
@@ -180,6 +180,44 @@ def main() -> None:
                 + ", ".join(str(i) for i in missing)
                 + " unknown. Open the Battle Deck screen and retry, or add-card those by hand."
             )
+        return
+
+    if args.command == "style":
+        from clash_jev.playstyle import (
+            clone_player,
+            distil_from_journal,
+            list_styles,
+            set_active,
+        )
+
+        # clash-jev style                 → list + show active
+        # clash-jev style <id>            → make this the active clone
+        # clash-jev style learn           → distil style from battle_journal
+        # clash-jev style clone <name> --base hog_cycle [--deck a,b,c,...]
+        if args.name == "learn":
+            style = distil_from_journal()
+            if style is None:
+                sys.exit("not enough finished battles in battle_journal.jsonl yet")
+            set_active(style.id)
+            print(f"active: {style.name}  ({style.source})")
+            return
+        if args.name == "clone":
+            sys.exit(
+                "use: clash-jev style clone <clone_name>  after defining a base JSON, "
+                "or python -c \"from clash_jev.playstyle import clone_player; "
+                "clone_player('my_ladder', deck=[...], base='hog_cycle', aggression=0.8)\""
+            )
+        if args.name:
+            style = set_active(args.name)
+            print(f"active: {style.name}")
+            return
+        from clash_jev.playstyle import load_active
+
+        active = load_active()
+        for style in list_styles():
+            mark = "*" if style.id == active.id else " "
+            print(f"{mark} {style.id:20s} {style.name}  {style.source}")
+        print(f"active: {active.id}")
         return
 
     if args.command == "snap":

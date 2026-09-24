@@ -52,6 +52,7 @@ from clash_jev.learn import (
     outcome_from_crowns,
     teach_with_canaries,
 )
+from clash_jev.playstyle import PlayStyle, load_active as load_active_style, set_active as set_active_style, distil_from_journal
 
 # Clash Royale real max ≈ 3 min regular + ~2 min OT. Anything past this is a
 # stale battle clock (entry 60 was 7.19h), never a real match — abort it.
@@ -112,7 +113,7 @@ class TacticalReflexPolicy:
     Used when local/cloud AI models are offline, under high latency, or as consensus fallback.
     """
 
-    def __init__(self, tune: Optional[TuneParams] = None):
+    def __init__(self, tune: Optional[TuneParams] = None, style: Optional[PlayStyle] = None):
         self._push_counter = 0
         # Dedicated lane alternator for the cycle/default square fallback —
         # evaluate_strategy's push paths share _push_counter and would skew
@@ -122,8 +123,23 @@ class TacticalReflexPolicy:
         self._last_defend_elapsed = -999.0
         # Bounded self-improvement knobs (defaults = hand-tuned behaviour).
         self.tune: TuneParams = tune or TuneParams()
+        # Cloned playstyle (another player's tempo/aggression/lane biases).
+        self.style: PlayStyle = style if style is not None else load_active_style()
         # Set by evaluate_strategy when the opponent-elixir gate returned this call.
         self._gate_fired = False
+
+    def _style_tempo(self, state: BattleState) -> Tuple[int, int]:
+        """(save_below, push_at) with tune grid + cloned style offsets applied."""
+        save_below, push_at = self.tempo_thresholds(state, self.tune)
+        st = self.style
+        save_below = max(1, save_below + int(st.save_offset))
+        push_at = max(save_below + 1, push_at + int(st.push_offset))
+        # High-aggression clones dump sooner.
+        if st.aggression >= 0.75:
+            push_at = max(save_below + 1, push_at - 1)
+        elif st.aggression <= 0.25:
+            push_at = push_at + 1
+        return save_below, push_at
 
     @staticmethod
     def tempo_thresholds(state: BattleState, tune: Optional[TuneParams] = None) -> Tuple[int, int]:
@@ -187,12 +203,18 @@ class TacticalReflexPolicy:
             if left_hp < right_hp - 0.05:
                 return "push_left"
         self._push_counter += 1
+        bias = self.style.lane_bias
+        if bias == "left":
+            return "push_left"
+        if bias == "right":
+            return "push_right"
         return "push_left" if (self._push_counter % 2 == 0) else "push_right"
 
     def evaluate_strategy(self, state: BattleState, threat_urgency: float = 0.0) -> str:
         self._gate_fired = False
-        save_below, push_at = self.tempo_thresholds(state, self.tune)
-        opening = state.elapsed_s < 12.0
+        save_below, push_at = self._style_tempo(state)
+        st = self.style
+        opening = state.elapsed_s < max(12.0, float(st.opening_patience_s))
         endgame = self._is_endgame(state)
         behind = self._behind(state) if endgame else False
 
@@ -245,9 +267,10 @@ class TacticalReflexPolicy:
                     return "defend_right"
                 return "defend_centre"
 
-        # 3. Counter-push conversion (defended in last ~10s, survivors still up).
-        # Double/triple elixir converts sooner — the refill is too fast to idle.
-        window = 10.0 if state.elixir_rate == "single" else 14.0
+        # 3. Counter-push conversion (defended recently, survivors still up).
+        # Style.counter_willingness scales the window; double/triple always wider.
+        base_window = 10.0 if state.elixir_rate == "single" else 14.0
+        window = base_window * (0.5 + 1.0 * float(st.counter_willingness))
         if state.elapsed_s - self._last_defend_elapsed <= window:
             counter_floor = max(3, save_below - 2)
             mine_l = state.left.mine_on_my_side + state.left.mine_at_bridge
@@ -260,9 +283,20 @@ class TacticalReflexPolicy:
                         return "counter_push_left"
                     return "counter_push_right"
 
-        # 4. Opening (first 12s): take the river, never sit on a full hand
+        # 4. Opening (first ~patience window): take the river, never sit on a full hand
         if opening:
-            if state.elixir >= 6:
+            open_push_e = 6 if st.aggression >= 0.6 else 7
+            if st.aggression <= 0.3:
+                open_push_e = 8
+            if state.elapsed_s < float(st.opening_patience_s) and state.elixir < open_push_e:
+                if state.elixir >= 4 and st.cycle_bias >= 0.5:
+                    return "cycle"
+                if state.elixir < 4:
+                    return "save_elixir"
+            if state.elixir >= open_push_e:
+                # Lane bias for the first commitment
+                if st.lane_bias in ("left", "right"):
+                    return f"push_{st.lane_bias}"
                 self._push_counter += 1
                 return "push_left" if (self._push_counter % 2 == 0) else "push_right"
             if state.elixir >= 4:
@@ -311,7 +345,12 @@ class TacticalReflexPolicy:
         if state.elixir < save_below:
             return "save_elixir"
 
-        # 7. Deck Cycling
+        # 7. Deck Cycling — cycle_bias clones spend here more often
+        if st.cycle_bias >= 0.6 and state.elixir >= save_below + 1:
+            for card in state.hand:
+                cost = info(card.name).cost
+                if cost is not None and cost <= 3:
+                    return "cycle"
         for card in state.hand:
             cost = info(card.name).cost
             if cost is not None and cost <= 2:
@@ -422,6 +461,32 @@ class TacticalReflexPolicy:
         return total
 
     @staticmethod
+    def _identified_enemy_value(state: BattleState) -> float:
+        """Elixir value of named enemy units only — no lane_sum phantom fallback.
+
+        Spells trade against what we can actually splash. Lane counters stay high
+        after bodies die and were letting fireball fire into empty boards.
+        """
+        total = 0.0
+        seen: set[str] = set()
+        for unit in state.units:
+            if unit.owner != "enemy" or not unit.name:
+                continue
+            try:
+                cost = info(unit.name).cost
+            except Exception:
+                cost = None
+            if cost is None:
+                # Unidentified named-ish body — conservative mid value, still a real unit.
+                total += 3.0
+            else:
+                if unit.name in seen:
+                    continue
+                seen.add(unit.name)
+                total += float(cost)
+        return total
+
+    @staticmethod
     def _real_threat_count(state: BattleState) -> int:
         return (
             state.left.enemy_on_my_side
@@ -470,11 +535,34 @@ class TacticalReflexPolicy:
 
         # Spells never answer cycle/push/build. On defend they only fire into a real multi-body pile —
         # single-target chip (empty fireball at a tower) is wasted elixir.
-        threat_count = self._real_threat_count(state)
+        # Lane counters are sticky/inflated — spells must see real unit bodies + identified
+        # value (no lane_sum fallback) or fireball fires at phantom pressure.
         is_defend = strategy.startswith("defend")
+        spell_min_threat = 1 if float(self.style.spell_eagerness) >= 0.5 else 2
+        spell_bodies = sum(
+            1 for u in state.units if u.owner == "enemy"
+        ) if is_defend else 0
+        spell_value = self._identified_enemy_value(state) if is_defend else 0.0
+        threat_count = self._real_threat_count(state)
+        threat_value = self._threat_elixir_value(state) if is_defend else 0.0
+
+        def _spell_trade_ok(card: HandCard) -> bool:
+            """Spell only if identified (non-phantom) threat value pays for it."""
+            if info(card.name).kind != "spell":
+                return True
+            scost = float(info(card.name).cost or 4)
+            if spell_value + 0.01 >= scost:
+                return True
+            # 3+ lane pressure can justify one under-cost splash on a real stack —
+            # value still comes from named units (no lane_sum phantom).
+            return threat_count >= 3 and spell_value + 0.01 >= scost - 2.0
+
         if is_defend:
-            if threat_count < 2:
+            # Real unit bodies for the min-threat gate — not sticky lane counters.
+            if spell_bodies < spell_min_threat:
                 ready_cards = [c for c in ready_cards if info(c.name).kind != "spell"]
+            else:
+                ready_cards = [c for c in ready_cards if _spell_trade_ok(c)]
             # Win conditions / building-only bodies cannot fight defenders — never a defend answer
             # while any fighting card is ready.
             fighters = [
@@ -508,7 +596,7 @@ class TacticalReflexPolicy:
             return None
 
         enemy_tags = self._enemy_threat_tags(state) if is_defend else set()
-        threat_value = self._threat_elixir_value(state) if is_defend else 0.0
+        # threat_value already computed above for the defend trade gate
         # Prefer tag from card DB; fall back to a known-air name list for weak/confident reads.
         _AIR_NAMES = frozenset({
             "minions", "minion_horde", "bats", "balloon", "baby_dragon",
@@ -532,12 +620,24 @@ class TacticalReflexPolicy:
 
             if is_defend:
                 # Defend against threats
-                if "splash" in tags:
-                    score += 25.0  # Wipes swarms
+                if c_info.kind == "spell":
+                    # Fireball/arrows are trades, not panic buttons: never out-score a body
+                    # on splash alone. Gate on identified spell_value (no lane phantom).
+                    scost = float(cost)
+                    if spell_value + 0.01 < scost - 2.0:
+                        score -= (scost - spell_value) * 30.0
+                    if threat_count < 3:
+                        score -= 20.0  # no splash value into a thin board
+                elif "splash" in tags:
+                    score += 25.0  # Wipes swarms (troop splash only)
                 if "defensive_building" in tags:
                     score += 30.0  # Cannon/Tesla pull and soak win conditions
-                if c_info.kind == "spell" and threat_count >= 3:
-                    score += 20.0  # Area spell into a stacked push
+                if (
+                    c_info.kind == "spell"
+                    and threat_count >= 3
+                    and spell_value + 0.01 >= float(cost) - 2.0
+                ):
+                    score += 20.0  # Swarm splash within two elixir of even
                 if "mini_tank" in tags or "tank" in tags:
                     score += 20.0  # Holds front line
                 if "anti_air" in tags or "hits_air" in tags:
@@ -569,7 +669,8 @@ class TacticalReflexPolicy:
                     score -= 20.0
                 # Elixir trade: do not answer a 2-elixir probe with a 5-elixir tank
                 # when a cheaper body exists. Overpay only if nothing else can hold.
-                if threat_value > 0 and cost > threat_value + 2:
+                # Spells already gated above — this is the troop overpay path.
+                if c_info.kind != "spell" and threat_value > 0 and cost > threat_value + 2:
                     score -= (cost - threat_value - 2) * 10.0
 
             elif strategy.startswith("counter_push"):
@@ -602,7 +703,7 @@ class TacticalReflexPolicy:
                 if "win_condition" in tags or ("tank" in tags and "slow" in tags):
                     score -= 50.0  # Giant/Golem are pressure, not cycle
                 if cost <= 2:
-                    score += 15.0
+                    score += 15.0 + 10.0 * float(self.style.cycle_bias)
 
             # Prefer cards we can comfortably afford without hitting 0 elixir
             if state.elixir - cost >= 1:
@@ -738,7 +839,7 @@ class ClashBattleAdapter:
         self.mapper = ClashCoordinateMapper(screen_width, screen_height)
         self.perception = Perception()
         self.learner = SelfImprover()
-        self.tactical_policy = TacticalReflexPolicy(tune=self.learner.params)
+        self.tactical_policy = TacticalReflexPolicy(tune=self.learner.params, style=load_active_style())
         self.start_time = time.time()
         self._last_state: Optional[BattleState] = None
         self._catalog: Optional[CatalogBank] = None
@@ -783,8 +884,10 @@ class ClashBattleAdapter:
             pass
         if self.tactical_policy is not None:
             self.tactical_policy.tune = self.learner.params
+            self.tactical_policy.style = load_active_style()
             self.tactical_policy._last_defend_elapsed = -999.0
             self.tactical_policy._push_counter = 0
+            self.tactical_policy._cycle_lane = 0
 
     def note_battle_end(self, frame_bgr: Optional[np.ndarray] = None) -> Optional[dict]:
         """Journal one finished match and maybe retune. Idempotent while battle is closed.
@@ -850,6 +953,32 @@ class ClashBattleAdapter:
         rec = self.learner.note_battle_end(outcome, crowns_out, elapsed, behind=behind)
         if self.tactical_policy is not None:
             self.tactical_policy.tune = self.learner.params
+        # Auto-copy: distil a style from the journal after each finished match
+        # and adopt it as active so future battles inherit the learned biases.
+        try:
+            if outcome in ("win", "loss", "draw"):
+                learned = distil_from_journal(style_id="auto_learned", min_games=5)
+                if learned is not None:
+                    set_active_style(learned.id)
+                    self.tactical_policy.style = learned if self.tactical_policy else learned
+        except Exception:
+            pass
+        # Auto-copy opponent deck from seen_cards into a shadow style for reference
+        try:
+            if self.perception.opponent.seen_cards:
+                opp_style = PlayStyle(
+                    id="opponent_seen",
+                    name="Opponent (auto)",
+                    source=f"observed cards: {', '.join(sorted(self.perception.opponent.seen_cards.keys())[:8])}",
+                    deck=tuple(sorted(self.perception.opponent.seen_cards.keys())[:8]),
+                    counter_willingness=0.6,
+                    cycle_bias=0.4,
+                    aggression=0.55,
+                )
+                from clash_jev.playstyle import save_style
+                save_style(opp_style)
+        except Exception:
+            pass
         return rec.as_dict() if rec is not None else None
 
     def _auto_teach_unknown(self, device_frame: np.ndarray, ref: np.ndarray, hand_cards) -> None:
@@ -1092,12 +1221,12 @@ class ClashBattleAdapter:
                 confidence = 0.94
             elif state.elixir >= 7 and threat_urgency < 0.40 and not real_threat and chosen_strategy in NO_PLAY:
                 chosen_strategy = "cycle"
-            elif state.elapsed_s < 12.0 and state.elixir >= 4 and chosen_strategy in NO_PLAY:
+            elif state.elapsed_s < max(12.0, float(self.tactical_policy.style.opening_patience_s)) and state.elixir >= 4 and chosen_strategy in NO_PLAY:
                 # Opening: never sit — local says push/cycle.
                 chosen_strategy = self.tactical_policy.evaluate_strategy(state, threat_urgency=threat_urgency)
                 engine_source = "tactical_reflex"
                 confidence = 0.94
-            elif chosen_strategy in NO_PLAY and state.elixir >= self.tactical_policy.tempo_thresholds(state, self.tactical_policy.tune)[1]:
+            elif chosen_strategy in NO_PLAY and state.elixir >= self.tactical_policy._style_tempo(state)[1]:
                 # Tempo says spend (double/triple push_at) but Jev said hold.
                 chosen_strategy = self.tactical_policy.evaluate_strategy(state, threat_urgency=threat_urgency)
                 engine_source = "tactical_reflex"

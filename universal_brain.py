@@ -2,17 +2,22 @@
 Universal Jev / Laya System One Brain for Jev-GamePilot.
 Combines:
 1. High-speed local Laya decision engine (convaiinnovations/laya) for sub-30ms offline inference.
-2. Local LLM2Jev Transformers backend (LLM2JEV_MODEL) for offline Choice/Score/Noul arbitration.
-3. TypeSafe Jev System One SDK cloud API (jev-latest) as robust online fallback.
-4. Keyless classifier.dev fallback for zero-config environments (circuit-broken on hard HTTP failures).
-5. Intelligent spatial & aerodynamic reflex actuator (no blind defaults; altitude & lane aware).
-6. Continuous async worker for 60+ FPS lock-free gameplay.
+2. Local openjev (AlexWortega/openjev Qwen3.5 NLI cross-encoder) typed-decision arbitration (fast path).
+3. Local LLM2Jev Transformers backend (LLM2JEV_MODEL) for deep offline Choice/Score/Noul arbitration when openjev is weak.
+4. Local GLiNER2.5-Decide (fastino 340M label-set classifier) as mid-tier when openjev is weak.
+5. Local Bev (Reza2kn/Bev Ternary-Bonsai-2-27B) SystemOne HTTP decision API on loopback.
+6. TypeSafe Jev System One SDK cloud API (jev-latest) as robust online fallback.
+7. Simple Jev Featherless classifier API (Choice/Score/Noul; keyless demo or FEATHERLESS_API_KEY).
+8. Keyless classifier.dev fallback for zero-config environments (circuit-broken on hard HTTP failures).
+7. Intelligent spatial & aerodynamic reflex actuator (no blind defaults; altitude & lane aware).
+8. Continuous async worker for 60+ FPS lock-free gameplay.
 """
 
 import json
 import math
 import os
 import queue
+import sys
 import threading
 import time
 import urllib.error
@@ -26,6 +31,21 @@ from profile_manager import GameAction, GameProfile
 from universal_vision import UniversalEntity, UniversalSceneState
 
 load_dotenv()
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env override; fall back to default on blank/invalid."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# Passive actions never commit on a high-threat fast path.
+_PASSIVE_ACTIONS = frozenset({"wait", "maintain_course", "stand_idle"})
 
 # Try importing local laya engine (supports both Apple Silicon MLX and standard PyTorch)
 _LAYA_AVAILABLE = False
@@ -67,6 +87,30 @@ except ImportError:
     L2JChoice = L2JScore = L2JNoul = None
     L2JJevRequest = L2JEngine = L2JTransformersBackend = None
 
+# openjev — AlexWortega/openjev Qwen3.5 NLI cross-encoder as a local typed-decision backend.
+_OPENJEV_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "openjev")
+_OPENJEV_SUBFOLDER = "qwen3.5-0.8b-nli-v5"
+_OPENJEV_AVAILABLE = False
+try:
+    if os.path.isdir(os.path.join(_OPENJEV_ROOT, _OPENJEV_SUBFOLDER)):
+        if _OPENJEV_ROOT not in sys.path:
+            sys.path.insert(0, _OPENJEV_ROOT)
+        from openjev_decide import OpenJev as OpenJevEngine  # noqa: E402
+
+        _OPENJEV_AVAILABLE = True
+except Exception:
+    OpenJevEngine = None
+
+# GLiNER2.5-Decide — fastino local label-set classifier (340M DeBERTa, gliner2 API).
+_GLINER_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "gliner25_decide")
+_GLINER_AVAILABLE = False
+try:
+    from gliner2.classification import ClassificationSchema, Classifier
+
+    _GLINER_AVAILABLE = True
+except Exception:
+    ClassificationSchema = Classifier = None
+
 # Try importing ClashBattleAdapter
 _CLASH_ADAPTER_AVAILABLE = False
 try:
@@ -103,11 +147,48 @@ class UniversalBrain:
         self.laya_agent = None
         self.laya_loading = False
         self._laya_tried = False
+        # Fusion tunables (env-overridable without code edits).
+        self.laya_fast_path_conf = _env_float("LAYA_FAST_PATH_CONF", 0.88)
+        # openjev alone can skip the 50s+ LLM2Jev path when it is this sure.
+        self.local_accept_conf = _env_float("LOCAL_ACCEPT_CONF", 0.72)
+        # Threat level that blocks a passive Laya fast-path commit.
+        self.fast_path_threat_gate = _env_float("FAST_PATH_THREAT_GATE", 0.60)
         self.llm2jev_model = os.getenv("LLM2JEV_MODEL", "").strip()
         self.llm2jev_engine = None
         self.llm2jev_loading = False
         self._llm2jev_tried = False
         self._llm2jev_lock = threading.Lock()
+        # openjev local NLI cross-encoder (typed decisions over profile.actions).
+        self.openjev_engine = None
+        self.openjev_loading = False
+        self._openjev_tried = False
+        self._openjev_lock = threading.Lock()
+        self.openjev_path = os.getenv("OPENJEV_PATH", _OPENJEV_ROOT).strip() or _OPENJEV_ROOT
+        self.openjev_subfolder = os.getenv("OPENJEV_SUBFOLDER", _OPENJEV_SUBFOLDER).strip() or _OPENJEV_SUBFOLDER
+        # GLiNER2.5-Decide — lazy mid-tier label-set classifier (loads on first weak openjev).
+        self.gliner_engine = None
+        self.gliner_loading = False
+        self._gliner_tried = False
+        self._gliner_lock = threading.Lock()
+        self.gliner_path = os.getenv("GLINER_PATH", _GLINER_ROOT).strip() or _GLINER_ROOT
+        # Simple Jev — Featherless classifier cloud tier (keyless demo, or FEATHERLESS_API_KEY).
+        self.simple_jev_url = (
+            os.getenv("SIMPLE_JEV_URL", "https://simple-jev-demo-api.featherless.ai").strip().rstrip("/")
+            or "https://simple-jev-demo-api.featherless.ai"
+        )
+        self.simple_jev_model = (
+            os.getenv("SIMPLE_JEV_MODEL", "featherless-ai/Qwen3.5-4B-classifier").strip()
+            or "featherless-ai/Qwen3.5-4B-classifier"
+        )
+        self.simple_jev_key = os.getenv("FEATHERLESS_API_KEY", "").strip()
+        self._simple_jev_dead = False
+        self._simple_jev_last_at = 0.0
+        # Bev — Reza2kn/Bev decision service (Ternary-Bonsai-2-27B) on loopback HTTP.
+        self.bev_url = os.getenv("BEV_URL", "http://127.0.0.1:18781").rstrip("/") or "http://127.0.0.1:18781"
+        self.bev_model = os.getenv("BEV_MODEL", "bev-bonsai-27b").strip() or "bev-bonsai-27b"
+        self._bev_lock = threading.Lock()
+        self._bev_up = False
+        self._bev_checked_at = 0.0
         self.clash_adapter = ClashBattleAdapter() if _CLASH_ADAPTER_AVAILABLE else None
         self.coc_adapter = CocRaidAdapter() if _COC_ADAPTER_AVAILABLE else None
         self.brawl_adapter = BrawlMatchAdapter() if _BRAWL_ADAPTER_AVAILABLE else None
@@ -133,6 +214,8 @@ class UniversalBrain:
         self._start_laya_loader()
         # Background LLM2Jev load only when LLM2JEV_MODEL is set (opt-in).
         self._start_llm2jev_loader()
+        # Background openjev load (local weights under models/openjev).
+        self._start_openjev_loader()
 
     def _start_llm2jev_loader(self):
         """Background-loads LLM2Jev Transformers backend when LLM2JEV_MODEL is set."""
@@ -163,6 +246,56 @@ class UniversalBrain:
                 self.llm2jev_loading = False
 
         threading.Thread(target=loader, daemon=True, name="LLM2JevLoader").start()
+
+    def _start_openjev_loader(self):
+        """Background-load AlexWortega/openjev Qwen3.5 NLI cross-encoder (local weights)."""
+        if not _OPENJEV_AVAILABLE or self._openjev_tried:
+            return
+        self._openjev_tried = True
+        self.openjev_loading = True
+
+        def loader():
+            try:
+                engine = OpenJevEngine.from_pretrained(
+                    self.openjev_path, subfolder=self.openjev_subfolder, device="cpu"
+                )
+                with self._lock:
+                    self.openjev_engine = engine
+            except Exception:
+                with self._lock:
+                    self.openjev_engine = None
+            finally:
+                self.openjev_loading = False
+
+        threading.Thread(target=loader, daemon=True, name="OpenJevLoader").start()
+
+    def _start_gliner_loader(self):
+        """Background-load fastino/GLiNER2.5-Decide classifier (lazy; first weak openjev)."""
+        if not _GLINER_AVAILABLE or self._gliner_tried:
+            return
+        self._gliner_tried = True
+        self.gliner_loading = True
+
+        def loader():
+            try:
+                # gliner2 prints a Unicode banner; Windows cp1252 stdout would crash it.
+                import contextlib
+                import io
+
+                with contextlib.redirect_stdout(io.StringIO()):
+                    if os.path.isdir(self.gliner_path):
+                        engine = Classifier.from_pretrained(self.gliner_path)
+                    else:
+                        engine = Classifier.from_pretrained("fastino/GLiNER2.5-Decide")
+                with self._lock:
+                    self.gliner_engine = engine
+            except Exception:
+                with self._lock:
+                    self.gliner_engine = None
+            finally:
+                self.gliner_loading = False
+
+        threading.Thread(target=loader, daemon=True, name="GLiNERLoader").start()
 
     def _start_laya_loader(self):
         """Asynchronously attempts to load local Laya model weights without network downloads."""
@@ -237,27 +370,34 @@ class UniversalBrain:
         """
         Unified Laya + Jev Dual-System Architecture:
         1. Fast local in-process inference via Laya (15-25ms, zero network overhead).
-        2. If Laya confidence is high (>= 0.88), commit immediately.
-        3. If Laya confidence is low (< 0.88) or ambiguous, escalate to Jev System One for arbitration.
+        2. If Laya confidence is high (>= LAYA_FAST_PATH_CONF, default 0.88) AND
+           not a passive commit under live threat, commit immediately.
+        3. Escalation: local openjev first (fast NLI cross-encoder), then local
+           GLiNER2.5-Decide (label-set classifier), then local LLM2Jev only when
+           both are missing/weak (50s+ CPU), then Bev, TypeSafe cloud, Simple Jev,
+           then classifier.dev.
         4. If both provide decisions, fuse them into 'laya_jev_consensus' with blended confidence.
         """
         laya_res = None
         if self.laya_agent is not None:
             laya_res = self._query_local_laya(profile, scene)
 
-        # Fast path: High confidence local Laya decision
-        if laya_res and laya_res.get("confidence", 0.0) >= 0.88:
+        # Fast path: high-confidence Laya — but never hard-commit a passive
+        # action when the scene or Laya itself reports live threat.
+        if laya_res and self._laya_fast_path_ok(laya_res, scene):
             with self._lock:
                 self.last_decision = laya_res
             return
 
-        # Secondary opinion / Escalation: local LLM2Jev first (offline),
-        # then TypeSafe cloud, then classifier.dev (circuit-broken on 403).
-        jev_res = None
-        if self.llm2jev_engine is not None:
-            jev_res = self._query_local_llm2jev(profile, scene)
+        # Secondary opinion / Escalation: local openjev → GLiNER → LLM2Jev, then local Bev
+        # (loopback SystemOne), then TypeSafe cloud, Simple Jev, then classifier.dev.
+        jev_res = self._local_escalation(profile, scene)
+        if not jev_res:
+            jev_res = self._query_bev(profile, scene)
         if not jev_res and self.client is not None and os.getenv("TYPESAFE_API_KEY"):
             jev_res = self._query_typesafe_sdk(profile, scene)
+        if not jev_res and not self._simple_jev_dead:
+            jev_res = self._query_simple_jev(profile, scene)
         if not jev_res and not self._classifier_dead:
             jev_res = self._query_classifier_dev(profile, scene)
 
@@ -276,13 +416,7 @@ class UniversalBrain:
                     "target_coords": laya_res.get("target_coords") or jev_res.get("target_coords"),
                 }
             else:
-                # Disagreement: pick higher calibrated confidence model
-                if laya_res.get("confidence", 0) >= jev_res.get("confidence", 0):
-                    fused = dict(laya_res)
-                    fused["source"] = "laya_preferred"
-                else:
-                    fused = dict(jev_res)
-                    fused["source"] = "jev_escalation"
+                fused = self._resolve_disagreement(laya_res, jev_res, scene)
 
             with self._lock:
                 self.last_decision = fused
@@ -294,6 +428,77 @@ class UniversalBrain:
             with self._lock:
                 self.last_decision = winner
 
+    def _laya_fast_path_ok(self, laya_res: Dict[str, Any], scene: UniversalSceneState) -> bool:
+        """True when Laya may commit without escalation.
+
+        Blocks passive actions under live threat so a high-confidence
+        'wait' cannot freeze the pilot while units close in.
+        """
+        conf = float(laya_res.get("confidence", 0.0) or 0.0)
+        if conf < self.laya_fast_path_conf:
+            return False
+        if laya_res.get("action") not in _PASSIVE_ACTIONS:
+            return True
+        scene_urgency = float(getattr(scene, "threat_urgency", 0.0) or 0.0)
+        laya_threat = float(laya_res.get("threat_score", 0.0) or 0.0)
+        return scene_urgency < self.fast_path_threat_gate and laya_threat < self.fast_path_threat_gate
+
+    def _local_escalation(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Optional[Dict[str, Any]]:
+        """openjev first (fast); GLiNER mid-tier on first weak openjev; LLM2Jev last."""
+        fast = None
+        if self.openjev_engine is not None:
+            fast = self._query_local_openjev(profile, scene)
+        if fast and float(fast.get("confidence", 0.0) or 0.0) >= self.local_accept_conf:
+            return fast
+        # Lazy-load GLiNER mid tier only when openjev is missing or unsure.
+        if self.gliner_engine is None and not self._gliner_tried:
+            self._start_gliner_loader()
+        mid = None
+        if self.gliner_engine is not None:
+            mid = self._query_gliner_decide(profile, scene)
+            if mid and float(mid.get("confidence", 0.0) or 0.0) >= self.local_accept_conf:
+                return mid
+        if self.llm2jev_engine is None:
+            return fast or mid
+        deep = self._query_local_llm2jev(profile, scene)
+        if not deep:
+            return fast or mid
+        best = fast or mid
+        if not best or float(deep.get("confidence", 0) or 0) > float(best.get("confidence", 0) or 0):
+            return deep
+        return best
+
+    def _resolve_disagreement(
+        self,
+        laya_res: Dict[str, Any],
+        jev_res: Dict[str, Any],
+        scene: UniversalSceneState,
+    ) -> Dict[str, Any]:
+        """Pick between disagreeing opinions; under high threat prefer non-passive."""
+        laya_c = float(laya_res.get("confidence", 0) or 0)
+        jev_c = float(jev_res.get("confidence", 0) or 0)
+        scene_urgency = float(getattr(scene, "threat_urgency", 0.0) or 0.0)
+        if scene_urgency >= self.fast_path_threat_gate:
+            laya_passive = laya_res.get("action") in _PASSIVE_ACTIONS
+            jev_passive = jev_res.get("action") in _PASSIVE_ACTIONS
+            if laya_passive and not jev_passive and jev_c >= laya_c - 0.15:
+                fused = dict(jev_res)
+                fused["source"] = "threat_preferred_jev"
+                return fused
+            if jev_passive and not laya_passive and laya_c >= jev_c - 0.15:
+                fused = dict(laya_res)
+                fused["source"] = "threat_preferred_laya"
+                return fused
+        if laya_c >= jev_c:
+            fused = dict(laya_res)
+            fused["source"] = "laya_preferred"
+        else:
+            fused = dict(jev_res)
+            fused["source"] = "jev_escalation"
+        return fused
+
     def query_jev_universal(
         self, profile: GameProfile, scene: UniversalSceneState
     ) -> Optional[Dict[str, Any]]:
@@ -302,16 +507,18 @@ class UniversalBrain:
         if self.laya_agent is not None:
             laya_res = self._query_local_laya(profile, scene)
 
-        if laya_res and laya_res.get("confidence", 0.0) >= 0.88:
+        if laya_res and self._laya_fast_path_ok(laya_res, scene):
             with self._lock:
                 self.last_decision = laya_res
             return laya_res
 
-        jev_res = None
-        if self.llm2jev_engine is not None:
-            jev_res = self._query_local_llm2jev(profile, scene)
+        jev_res = self._local_escalation(profile, scene)
+        if not jev_res:
+            jev_res = self._query_bev(profile, scene)
         if not jev_res and self.client is not None and os.getenv("TYPESAFE_API_KEY"):
             jev_res = self._query_typesafe_sdk(profile, scene)
+        if not jev_res and not self._simple_jev_dead:
+            jev_res = self._query_simple_jev(profile, scene)
         if not jev_res and not self._classifier_dead:
             jev_res = self._query_classifier_dev(profile, scene)
 
@@ -326,8 +533,7 @@ class UniversalBrain:
                     "target_coords": laya_res.get("target_coords") or jev_res.get("target_coords"),
                 }
             else:
-                fused = dict(laya_res if laya_res.get("confidence", 0) >= jev_res.get("confidence", 0) else jev_res)
-                fused["source"] = "laya_preferred" if laya_res.get("confidence", 0) >= jev_res.get("confidence", 0) else "jev_escalation"
+                fused = self._resolve_disagreement(laya_res, jev_res, scene)
             with self._lock:
                 self.last_decision = fused
             return fused
@@ -365,6 +571,30 @@ class UniversalBrain:
         Per Laya integration principles: 'Put the state into words, never numbers.'
         """
         parts = [f"Game: {profile.name} ({profile.category})."]
+
+        phase = (getattr(scene, "game_phase", "") or "").strip()
+        if phase and phase not in {"active"}:
+            parts.append(f"Game phase is {phase}.")
+
+        urgency = float(getattr(scene, "threat_urgency", 0.0) or 0.0)
+        if urgency >= 0.85:
+            parts.append("Immediate danger is critical — react now.")
+        elif urgency >= 0.60:
+            parts.append("Danger is elevated — be ready to act.")
+        elif urgency >= 0.30:
+            parts.append("Some threat present on screen.")
+        elif scene.threats:
+            parts.append("Minor threats visible but not critical.")
+
+        if scene.threats:
+            parts.append(f"Threat count on screen: {len(scene.threats)}.")
+
+        rec = (getattr(scene, "recommended_action", "") or "").strip()
+        if rec and rec not in {"wait", "maintain_course", "stand_idle"}:
+            parts.append(f"Vision recommends action: {rec}.")
+
+        if hasattr(scene, "elixir") and profile.id.startswith(("mobile_clash", "clash")):
+            parts.append(f"Player elixir bank is about {int(scene.elixir)}.")
 
         # Player telemetry
         if scene.player:
@@ -464,7 +694,10 @@ class UniversalBrain:
             questions = {
                 "tactical_action": {
                     "type": "choice",
-                    "instructions": f"What is the required tactical maneuver for the player in {profile.name}?",
+                    "instructions": (
+                        f"What is the required tactical maneuver for the player in {profile.name}? "
+                        f"When threat is elevated, choose an active response over waiting."
+                    ),
                     "criteria": criteria,
                 },
                 "threat_urgency": {
@@ -492,6 +725,15 @@ class UniversalBrain:
             chosen_action = act_data["choice"]
             conf = act_data["confidence"]
             urgency_score = min(1.0, float(ans["threat_urgency"]["score"]) / 4.0)
+
+            noul = ans.get("emergency_reflex")
+            if isinstance(noul, dict):
+                noul = noul.get("noul", noul.get("yes", None))
+            if noul is not None:
+                try:
+                    urgency_score = max(urgency_score, min(1.0, float(noul)))
+                except (TypeError, ValueError):
+                    pass
 
             target_coords = None
             if scene.best_target:
@@ -532,7 +774,11 @@ class UniversalBrain:
 
             questions = {
                 "tactical_action": L2JChoice(
-                    instructions=f"Select the optimal immediate maneuver in '{profile.name}' to evade hazards and survive.",
+                    instructions=(
+                        f"Select the optimal immediate maneuver in '{profile.name}' "
+                        f"to evade hazards and survive. Prefer concrete action over waiting "
+                        f"when threat is elevated."
+                    ),
                     criteria=criteria,
                 ),
                 "threat_severity": L2JScore(
@@ -566,6 +812,10 @@ class UniversalBrain:
             danger_raw = float(getattr(ans.get("threat_severity"), "score", 2.0))
             danger_normalized = min(1.0, danger_raw / 4.0)
 
+            urgency = getattr(ans.get("is_urgent_reflex"), "noul", None)
+            if urgency is not None:
+                danger_normalized = max(danger_normalized, min(1.0, float(urgency)))
+
             target_coords = None
             if scene.best_target:
                 target_coords = (scene.best_target.click_x, scene.best_target.click_y)
@@ -582,6 +832,263 @@ class UniversalBrain:
             return None
         finally:
             self._llm2jev_lock.release()
+
+    def _query_local_openjev(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Optional[Dict[str, Any]]:
+        """Local openjev (AlexWortega/openjev) typed-decision query.
+
+        Scores each profile action as an entailment hypothesis against the verbal
+        state; argmax P(entailment) is the chosen action. Single-flight.
+        """
+        engine = self.openjev_engine
+        if engine is None:
+            return None
+        if not self._openjev_lock.acquire(blocking=False):
+            return None
+        t0 = time.perf_counter()
+        try:
+            situation = self._build_verbal_state(profile, scene)
+            options = [a.name for a in profile.actions]
+            if not options:
+                return None
+            criteria = {a.name: a.description or a.name for a in profile.actions}
+            if "wait" not in options and profile.category != "clicker":
+                options.append("wait")
+                criteria["wait"] = "Hold course; horizon clear"
+
+            questions = [
+                {
+                    "type": "choice",
+                    "instructions": (
+                        f"In '{profile.name}', select the single best immediate action "
+                        f"given the situation. Choose exactly one of the options."
+                        "\nAllowed answers and rubric: " + json.dumps(criteria, ensure_ascii=False)
+                    ),
+                    "options": options,
+                },
+                {
+                    "type": "score",
+                    "instructions": "Rate immediate danger from 0 (safe) to 4 (critical)",
+                    "options": ["0", "1", "2", "3", "4"],
+                },
+                {
+                    "type": "noul",
+                    "instructions": "Is an immediate evasive or corrective action required right now?",
+                    "options": ["no", "yes"],
+                },
+            ]
+            answers = engine.decide(situation, questions)
+            latency = (time.perf_counter() - t0) * 1000.0
+
+            probs = (answers[0] or {}).get("probabilities") or {}
+            if not probs:
+                return None
+            action_choice = max(probs, key=probs.get)
+            action_conf = float(probs.get(action_choice, 0.5))
+            action_choice = self.coerce_action_name(profile, action_choice, scene)
+
+            danger_probs = (answers[1] or {}).get("probabilities") or {}
+            danger_raw = 0.0
+            if danger_probs:
+                try:
+                    danger_raw = max(danger_probs, key=lambda k: float(danger_probs[k]))
+                    danger_raw = float(danger_raw)
+                except (TypeError, ValueError):
+                    danger_raw = 0.0
+            danger_normalized = min(1.0, max(0.0, danger_raw / 4.0))
+
+            urgency = (answers[2] or {}).get("noul")
+            if urgency is not None:
+                # blend noul yes-prob into threat so fusion sees a single danger signal
+                danger_normalized = max(danger_normalized, float(urgency))
+
+            target_coords = None
+            if scene.best_target:
+                target_coords = (scene.best_target.click_x, scene.best_target.click_y)
+
+            return {
+                "action": action_choice,
+                "threat_score": round(danger_normalized, 2),
+                "confidence": round(action_conf, 3),
+                "latency_ms": round(latency, 1),
+                "source": "local_openjev",
+                "target_coords": target_coords,
+            }
+        except Exception:
+            return None
+        finally:
+            self._openjev_lock.release()
+
+    def _query_gliner_decide(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Optional[Dict[str, Any]]:
+        """Local GLiNER2.5-Decide label-set classifier (fastino, 340M).
+
+        One forward pass scores tactical_action (profile labels), threat_severity
+        (0-4 ordinal), and is_urgent_reflex (yes/no). Single-flight.
+        """
+        engine = self.gliner_engine
+        if engine is None:
+            return None
+        if not self._gliner_lock.acquire(blocking=False):
+            return None
+        t0 = time.perf_counter()
+        try:
+            situation = self._build_verbal_state(profile, scene)
+            labels = [a.name for a in profile.actions]
+            if not labels:
+                return None
+            if "wait" not in labels and profile.category != "clicker":
+                labels.append("wait")
+
+            schema = ClassificationSchema()
+            schema.single("tactical_action", labels)
+            schema.single("threat_severity", ["0", "1", "2", "3", "4"])
+            schema.single("is_urgent_reflex", ["yes", "no"])
+            result = engine.classify(situation, schema)
+            latency = (time.perf_counter() - t0) * 1000.0
+
+            action_choice = result.value("tactical_action")
+            if not isinstance(action_choice, str):
+                return None
+            conf_raw = result.confidence("tactical_action")
+            action_conf = float(conf_raw) if conf_raw is not None else 0.80
+            action_choice = self.coerce_action_name(profile, action_choice, scene)
+
+            danger_raw = result.value("threat_severity")
+            try:
+                danger_normalized = min(1.0, max(0.0, float(danger_raw) / 4.0))
+            except (TypeError, ValueError):
+                danger_normalized = scene.threat_urgency
+
+            if str(result.value("is_urgent_reflex")).lower() == "yes":
+                danger_normalized = max(danger_normalized, 0.90)
+
+            target_coords = None
+            if scene.best_target:
+                target_coords = (scene.best_target.click_x, scene.best_target.click_y)
+
+            return {
+                "action": action_choice,
+                "threat_score": round(danger_normalized, 2),
+                "confidence": round(action_conf, 3),
+                "latency_ms": round(latency, 1),
+                "source": "local_gliner_decide",
+                "target_coords": target_coords,
+            }
+        except Exception:
+            return None
+        finally:
+            self._gliner_lock.release()
+
+    def _bev_healthy(self) -> bool:
+        """Cached loopback health probe for the Bev decision API (5s TTL)."""
+        now = time.monotonic()
+        if now - self._bev_checked_at < 5.0:
+            return self._bev_up
+        try:
+            req = urllib.request.Request(self.bev_url + "/health", method="GET")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                self._bev_up = resp.status == 200
+        except Exception:
+            self._bev_up = False
+        self._bev_checked_at = now
+        return self._bev_up
+
+    def _query_bev(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Optional[Dict[str, Any]]:
+        """Bev (Reza2kn/Bev) SystemOne query over loopback HTTP.
+
+        Scores choice / noul / score fields independently against the verbal
+        state; argmax probability is the chosen action. Single-flight with a
+        hard 8s ceiling so a slow 27B never blocks the fusion chain.
+        """
+        if not self._bev_healthy():
+            return None
+        if not self._bev_lock.acquire(blocking=False):
+            return None
+        t0 = time.perf_counter()
+        try:
+            situation = self._build_verbal_state(profile, scene)
+            options = [a.name for a in profile.actions]
+            if not options:
+                return None
+            criteria = {a.name: a.description or a.name for a in profile.actions}
+            if "wait" not in options and profile.category != "clicker":
+                options.append("wait")
+                criteria["wait"] = "Hold course; horizon clear"
+
+            body = {
+                "model": self.bev_model,
+                "state": {"text": situation},
+                "questions": {
+                    "tactical_action": {
+                        "type": "choice",
+                        "instructions": (
+                            f"Select the single best immediate action in '{profile.name}' "
+                            f"given the situation."
+                        ),
+                        "criteria": criteria,
+                    },
+                    "danger": {
+                        "type": "score",
+                        "instructions": "Rate immediate danger from 0 (safe) to 4 (critical)",
+                        "criteria": ["0", "1", "2", "3", "4"],
+                    },
+                    "urgent": {
+                        "type": "noul",
+                        "instructions": "Is an immediate evasive or corrective action required right now?",
+                    },
+                },
+            }
+            req = urllib.request.Request(
+                self.bev_url + "/v1/systemone",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=8.0) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            latency = (time.perf_counter() - t0) * 1000.0
+
+            answers = payload.get("answers") or {}
+            action_ans = answers.get("tactical_action") or {}
+            probs = action_ans.get("probabilities") or {}
+            if not probs:
+                return None
+            action_choice = max(probs, key=probs.get)
+            action_conf = float(probs.get(action_choice, 0.5))
+            action_choice = self.coerce_action_name(profile, action_choice, scene)
+
+            danger_ans = answers.get("danger") or {}
+            danger_raw = float(danger_ans.get("score") or 0.0)
+            danger_normalized = min(1.0, max(0.0, danger_raw / 4.0))
+
+            urgency = (answers.get("urgent") or {}).get("noul")
+            if urgency is not None:
+                danger_normalized = max(danger_normalized, float(urgency))
+
+            target_coords = None
+            if scene.best_target:
+                target_coords = (scene.best_target.click_x, scene.best_target.click_y)
+
+            return {
+                "action": action_choice,
+                "threat_score": round(danger_normalized, 2),
+                "confidence": round(action_conf, 3),
+                "latency_ms": round(latency, 1),
+                "source": "local_bev",
+                "target_coords": target_coords,
+            }
+        except Exception:
+            # Service died mid-flight — force a re-probe on next call.
+            self._bev_up = False
+            self._bev_checked_at = 0.0
+            return None
+        finally:
+            self._bev_lock.release()
 
     def _query_typesafe_sdk(
         self, profile: GameProfile, scene: UniversalSceneState
@@ -695,6 +1202,108 @@ class UniversalBrain:
         except urllib.error.HTTPError as e:
             if getattr(e, "code", None) in (403, 404, 429, 500, 502, 503):
                 self._classifier_dead = True
+            return None
+        except Exception:
+            return None
+
+    def _query_simple_jev(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Optional[Dict[str, Any]]:
+        """Simple Jev Featherless classifier API (Choice/Score/Noul over HTTP).
+
+        Keyless public demo by default; set FEATHERLESS_API_KEY for production
+        endpoint. Circuit-broken on hard HTTP failures; ≥0.55s between calls
+        (demo rate limit 2 rps).
+        """
+        if self._simple_jev_dead:
+            return None
+        now = time.monotonic()
+        if now - self._simple_jev_last_at < 0.55:
+            return None
+        self._simple_jev_last_at = now
+        t0 = time.perf_counter()
+        try:
+            situation = self._build_verbal_state(profile, scene)
+            criteria = {
+                action.name: action.description or action.name
+                for action in profile.actions
+            }
+            if "wait" not in criteria and profile.category != "clicker":
+                criteria["wait"] = "Hold course; horizon clear"
+
+            payload = {
+                "model": self.simple_jev_model,
+                "questions": {
+                    "tactical_action": {
+                        "type": "choice",
+                        "instructions": (
+                            f"Select the optimal immediate maneuver in '{profile.name}'. "
+                            "Prefer concrete action over waiting when threat is elevated."
+                        ),
+                        "criteria": criteria,
+                    },
+                    "threat_severity": {
+                        "type": "score",
+                        "instructions": "Rate immediate collision urgency on a scale from 0 to 4",
+                        "criteria": [
+                            "0: Safe - Clear horizon",
+                            "1: Low - Distant hazard",
+                            "2: Moderate - Approaching action threshold",
+                            "3: High - Critical reaction zone",
+                            "4: Critical - Imminent impact",
+                        ],
+                    },
+                    "is_urgent_reflex": {
+                        "type": "noul",
+                        "instructions": "Should an immediate evasive maneuver be triggered right now?",
+                    },
+                },
+                "state": situation,
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "jev-gamepilot/2.0",
+            }
+            if self.simple_jev_key:
+                headers["Authorization"] = f"Bearer {self.simple_jev_key}"
+
+            req = urllib.request.Request(
+                self.simple_jev_url + "/v1/classifier",
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=3.5) as resp:
+                data = json.load(resp)
+
+            answers = data.get("answers") or {}
+            act = answers.get("tactical_action") or {}
+            action_choice = act.get("choice") or profile.actions[0].name
+            action_choice = self.coerce_action_name(profile, action_choice, scene)
+            action_conf = float(act.get("confidence") or 0.85)
+
+            sev = answers.get("threat_severity") or {}
+            danger_normalized = min(1.0, max(0.0, float(sev.get("score") or 0.0) / 4.0))
+            reflex = answers.get("is_urgent_reflex") or {}
+            urgency = reflex.get("noul")
+            if urgency is not None:
+                danger_normalized = max(danger_normalized, min(1.0, float(urgency)))
+
+            latency = (time.perf_counter() - t0) * 1000
+            target_coords = None
+            if scene.best_target:
+                target_coords = (scene.best_target.click_x, scene.best_target.click_y)
+
+            return {
+                "action": action_choice,
+                "threat_score": round(danger_normalized, 2),
+                "confidence": round(action_conf, 3),
+                "latency_ms": round(latency, 1),
+                "source": "jev_simple_jev",
+                "target_coords": target_coords,
+            }
+        except urllib.error.HTTPError as e:
+            if getattr(e, "code", None) in (401, 403, 404, 429, 500, 502, 503):
+                self._simple_jev_dead = True
             return None
         except Exception:
             return None

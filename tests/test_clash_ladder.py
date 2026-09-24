@@ -79,6 +79,80 @@ class DefendNeverPicksWinConditionTests(unittest.TestCase):
         self.assertIsNotNone(card)
         self.assertEqual(card.name, "knight")
 
+
+class NoWastedFireballTests(unittest.TestCase):
+    """Live log: 176 fireballs into 1-2 elixir bodies — trade gate must kill that."""
+
+    def setUp(self):
+        self.policy = TacticalReflexPolicy()
+
+    def test_fireball_not_for_single_skeletons(self):
+        state = make_state(
+            elixir=8,
+            hand=[
+                HandCard(0, "fireball", True),
+                HandCard(1, "knight", True),
+            ],
+            left=LaneView(enemy_on_my_side=2),
+            units=(
+                Unit(owner="enemy", x=0.3, y=0.55, health=1.0, name="skeletons"),
+                Unit(owner="enemy", x=0.32, y=0.56, health=1.0, name="skeletons"),
+            ),
+        )
+        card = self.policy.select_card("defend_left", state)
+        self.assertIsNotNone(card)
+        self.assertNotEqual(card.name, "fireball")
+
+    def test_fireball_blocked_when_value_below_cost(self):
+        # 1 spear goblins (2) on board — fireball costs 4 → negative trade
+        state = make_state(
+            elixir=8,
+            hand=[
+                HandCard(0, "fireball", True),
+                HandCard(1, "cannon", True),
+            ],
+            left=LaneView(enemy_on_my_side=2),
+            units=(Unit(owner="enemy", x=0.3, y=0.55, health=1.0, name="spear_goblins"),),
+        )
+        card = self.policy.select_card("defend_left", state)
+        self.assertIsNotNone(card)
+        self.assertNotEqual(card.name, "fireball")
+
+    def test_fireball_allowed_on_paid_stack(self):
+        # Minion horde-ish value: 3+ identified bodies worth >= 4
+        state = make_state(
+            elixir=9,
+            hand=[
+                HandCard(0, "fireball", True),
+                HandCard(1, "giant", True),  # win-con filtered on defend
+                HandCard(2, "archers", True),
+            ],
+            left=LaneView(enemy_on_my_side=3),
+            units=(
+                Unit(owner="enemy", x=0.3, y=0.55, health=1.0, name="minions"),
+                Unit(owner="enemy", x=0.34, y=0.57, health=1.0, name="minions"),
+                Unit(owner="enemy", x=0.28, y=0.54, health=1.0, name="minions"),
+            ),
+        )
+        card = self.policy.select_card("defend_left", state)
+        self.assertIsNotNone(card)
+        # Fireball may win on a paid swarm, but never the giant
+        self.assertNotEqual(card.name, "giant")
+
+    def test_no_spell_when_threat_count_low(self):
+        state = make_state(
+            elixir=8,
+            hand=[
+                HandCard(0, "fireball", True),
+                HandCard(1, "knight", True),
+            ],
+            left=LaneView(enemy_on_my_side=1),
+            units=(Unit(owner="enemy", x=0.3, y=0.55, health=1.0, name="knight"),),
+        )
+        card = self.policy.select_card("defend_left", state)
+        self.assertIsNotNone(card)
+        self.assertEqual(card.name, "knight")
+
     def test_defend_giant_only_when_no_fighter(self):
         state = make_state(
             elixir=8,

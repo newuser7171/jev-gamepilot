@@ -566,8 +566,22 @@ def main():
     )
     parser.add_argument("--device", default=None, help="ADB device serial if multiple attached")
     parser.add_argument("--no-preview", action="store_true", help="Run headless without preview window")
+    parser.add_argument(
+        "--style",
+        default=None,
+        help="Playstyle id to clone for Clash battles (e.g. hog_cycle, golem_beatdown, custom name)",
+    )
 
     args = parser.parse_args()
+    if args.style:
+        try:
+            from clash_jev.playstyle import set_active
+
+            style = set_active(args.style)
+            console.print(f"[bold green]Cloned playstyle: {style.name}[/]")
+        except KeyError as exc:
+            console.print(f"[bold red]{exc}[/]")
+            return
     pilot = PhoneGamePilot(profile_id=args.profile, device_serial=args.device)
     pilot.start(show_preview=not args.no_preview)
 

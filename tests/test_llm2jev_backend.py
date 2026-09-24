@@ -85,7 +85,8 @@ class QueryLocalLLM2JEVTests(unittest.TestCase):
         self.assertIsNotNone(res)
         self.assertEqual(res["source"], "local_llm2jev")
         self.assertEqual(res["action"], "jump")
-        self.assertEqual(res["threat_score"], 0.75)
+        # threat_severity=3 → 0.75; is_urgent_reflex noul=0.85 blends up.
+        self.assertEqual(res["threat_score"], 0.85)
         self.assertEqual(res["confidence"], 0.91)
         self.assertGreater(res["latency_ms"], 0)
 

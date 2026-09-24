@@ -1,0 +1,14 @@
+{
+  "id": "unit_learned",
+  "name": "Learned (6W/4L)",
+  "save_offset": 0,
+  "push_offset": -1,
+  "counter_willingness": 0.76,
+  "cycle_bias": 0.4,
+  "spell_eagerness": 0.0,
+  "opening_patience_s": 3.3,
+  "lane_bias": "balanced",
+  "aggression": 0.9,
+  "source": "distilled from battle_journal.jsonl (10 games)",
+  "deck": []
+}

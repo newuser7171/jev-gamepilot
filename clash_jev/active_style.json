@@ -1,0 +1,17 @@
+{
+  "id": "auto_learned",
+  "style": {
+    "id": "auto_learned",
+    "name": "Learned (81W/64L)",
+    "save_offset": 0,
+    "push_offset": 0,
+    "counter_willingness": 0.6743996913580248,
+    "cycle_bias": 0.4,
+    "spell_eagerness": 0.0,
+    "opening_patience_s": 3.9420023148148147,
+    "lane_bias": "balanced",
+    "aggression": 0.6859992283950618,
+    "source": "distilled from battle_journal.jsonl (161 games)",
+    "deck": []
+  }
+}
