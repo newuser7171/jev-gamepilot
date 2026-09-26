@@ -4,6 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import os
+
+os.environ["LOCAL_STRATEGY_DIR"] = ""  # never boot the model inside unit tests
+
 from adapters.clash_adapter import TacticalReflexPolicy
 from clash_jev.playstyle import (
     BUILTIN_STYLES,
