@@ -424,11 +424,11 @@ class UniversalBrain:
         jev_res = self._local_escalation(profile, scene)
         if not jev_res:
             jev_res = self._query_bev(profile, scene)
-        if not jev_res and self.client is not None and os.getenv("TYPESAFE_API_KEY"):
+        if not jev_res:
             jev_res = self._query_typesafe_sdk(profile, scene)
-        if not jev_res and not self._simple_jev_dead:
+        if not jev_res:
             jev_res = self._query_simple_jev(profile, scene)
-        if not jev_res and not self._classifier_dead:
+        if not jev_res:
             jev_res = self._query_classifier_dev(profile, scene)
 
         # Consensus Fusion: Merge Laya + Jev decisions
@@ -558,11 +558,11 @@ class UniversalBrain:
         jev_res = self._local_escalation(profile, scene)
         if not jev_res:
             jev_res = self._query_bev(profile, scene)
-        if not jev_res and self.client is not None and os.getenv("TYPESAFE_API_KEY"):
+        if not jev_res:
             jev_res = self._query_typesafe_sdk(profile, scene)
-        if not jev_res and not self._simple_jev_dead:
+        if not jev_res:
             jev_res = self._query_simple_jev(profile, scene)
-        if not jev_res and not self._classifier_dead:
+        if not jev_res:
             jev_res = self._query_classifier_dev(profile, scene)
 
         if laya_res and jev_res:
@@ -1300,7 +1300,14 @@ class UniversalBrain:
     def _query_typesafe_sdk(
         self, profile: GameProfile, scene: UniversalSceneState
     ) -> Optional[Dict[str, Any]]:
-        """Inference via TypeSafe Jev System One cloud SDK."""
+        """Inference via TypeSafe Jev System One cloud SDK.
+
+        Self-guarding: the fusion chain calls every tier unconditionally so tier order
+        stays observable. Unconfigured credentials short-circuit here, not at the call
+        site.
+        """
+        if self.client is None or not os.getenv("TYPESAFE_API_KEY", "").strip():
+            return None
         t0 = time.perf_counter()
         try:
             situation = self._build_verbal_state(profile, scene)
