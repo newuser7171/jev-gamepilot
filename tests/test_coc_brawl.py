@@ -1,5 +1,7 @@
 """CoC + Brawl Stars adapters, package map, profiles, vision phases, brain branches."""
+import os
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -254,19 +256,29 @@ class DispatchTests(unittest.TestCase):
 
 
 class BrainBranchSmokeTests(unittest.TestCase):
-    def test_brain_constructs_new_adapters(self):
+    """Each case builds a real UniversalBrain. Without the loader patch below, every one
+    spawns the openjev and Laya loader threads and the process dies with 0xC0000005 in
+    c10.dll rather than reporting a failure. Scoped to this class: setting the env var at
+    import time leaked into every later module and broke the llm2jev loader test."""
+
+    def _brain(self):
         from universal_brain import UniversalBrain
 
-        ub = UniversalBrain()
+        patcher = patch.dict(os.environ, {"JEV_DISABLE_LOADERS": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return UniversalBrain()
+
+    def test_brain_constructs_new_adapters(self):
+        ub = self._brain()
         self.assertIsNotNone(ub.coc_adapter)
         self.assertIsNotNone(ub.brawl_adapter)
 
     def test_coc_home_returns_find_match(self):
-        from universal_brain import UniversalBrain
         from profile_manager import ProfileManager
         from universal_vision import UniversalSceneState
 
-        ub = UniversalBrain()
+        ub = self._brain()
         prof = ProfileManager().get_profile("mobile_coc")
         scene = UniversalSceneState()
         scene.game_phase = "main_menu"
@@ -275,11 +287,10 @@ class BrainBranchSmokeTests(unittest.TestCase):
         self.assertEqual(d["action"], "find_match")
 
     def test_brawl_menu_returns_start_battle(self):
-        from universal_brain import UniversalBrain
         from profile_manager import ProfileManager
         from universal_vision import UniversalSceneState
 
-        ub = UniversalBrain()
+        ub = self._brain()
         prof = ProfileManager().get_profile("mobile_brawlstars")
         scene = UniversalSceneState()
         scene.game_phase = "main_menu"
@@ -288,11 +299,10 @@ class BrainBranchSmokeTests(unittest.TestCase):
         self.assertEqual(d["action"], "start_battle")
 
     def test_coc_results_confirm(self):
-        from universal_brain import UniversalBrain
         from profile_manager import ProfileManager
         from universal_vision import UniversalSceneState
 
-        ub = UniversalBrain()
+        ub = self._brain()
         prof = ProfileManager().get_profile("mobile_coc")
         scene = UniversalSceneState()
         scene.game_phase = "game_over"

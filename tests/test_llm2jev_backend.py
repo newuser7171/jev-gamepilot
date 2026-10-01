@@ -15,7 +15,9 @@ def make_brain():
     with patch.object(brain_module.threading.Thread, "start"), \
             patch.object(brain_module.UniversalBrain, "_start_laya_loader"), \
             patch.object(brain_module.UniversalBrain, "_start_llm2jev_loader"):
-        return brain_module.UniversalBrain()
+        brain = brain_module.UniversalBrain()
+    brain.fastino_key = ""  # hosted Fastino tier stays offline in unit tests
+    return brain
 
 
 class _Ans:

@@ -312,7 +312,7 @@ def distil_from_journal(
     Reads clash_jev/battle_journal.jsonl (same file SelfImprover writes).
     Returns None when there is not enough finished data.
     """
-    from clash_jev.learn import JOURNAL_PATH
+    from clash_jev.learn import JOURNAL_PATH, is_played_game
 
     path = journal_path or JOURNAL_PATH
     if not path.is_file():
@@ -326,7 +326,7 @@ def distil_from_journal(
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(row, dict) and row.get("outcome") in ("win", "loss", "draw"):
+        if isinstance(row, dict) and is_played_game(row):
             rows.append(row)
     if len(rows) < min_games:
         return None

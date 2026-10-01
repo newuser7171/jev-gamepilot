@@ -17,7 +17,9 @@ def make_brain():
             patch.object(brain_module.UniversalBrain, "_start_laya_loader"), \
             patch.object(brain_module.UniversalBrain, "_start_llm2jev_loader"), \
             patch.object(brain_module.UniversalBrain, "_start_openjev_loader"):
-        return brain_module.UniversalBrain()
+        brain = brain_module.UniversalBrain()
+    brain.fastino_key = ""  # hosted Fastino tier stays offline in unit tests
+    return brain
 
 
 def make_scene(urgency=0.5):

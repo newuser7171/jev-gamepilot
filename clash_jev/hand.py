@@ -88,6 +88,9 @@ _CATALOG_HAND_IN_DECK_SCORE = 0.35
 _CATALOG_HAND_IN_DECK_LEAD = 0.005
 _CATALOG_HAND_ANY_SCORE = 0.45
 _CATALOG_HAND_ANY_LEAD = 0.02
+# A confident non-deck catalog read must repeat on consecutive frames before it is trusted: a
+# single noisy crop (transition wipe, overlay) must land as unknown, never as a card we hold.
+_NONDECK_HOLD = 2
 # In-deck bank hit with a solid score: greyed/washed hand art keeps the runner-up close, so a
 # thin lead must not dump a known deck card into unknown / catalog false-accept (golem, …).
 _HAND_IN_DECK_SCORE = 0.40
@@ -445,6 +448,8 @@ class HandReader:
         self.bank = ShapeBank()
         self.catalog = CatalogBank()
         self.next_card: str | None = None
+        self._nondeck: dict[int, tuple[str, int]] = {}  # slot -> (candidate, consecutive reads)
+        self._next_vote: tuple[str, int] | None = None
 
     def read(self, frame: numpy.ndarray) -> tuple[HandCard, ...]:
         reference = _reference(frame)
@@ -486,20 +491,33 @@ class HandReader:
                         )
                     elif not bank_in_deck_near:
                         # No competent in-deck bank candidate: only then trust a confident
-                        # non-deck catalog read (real loadout change).
-                        known = (
+                        # non-deck catalog read (real loadout change) — but only after it has
+                        # held for _NONDECK_HOLD consecutive frames. One frame of noise is unknown.
+                        confident = (
                             cat_score >= _CATALOG_HAND_ANY_SCORE
                             and cat_lead >= _CATALOG_HAND_ANY_LEAD
                         )
+                        if confident:
+                            vote = self._nondeck.get(slot)
+                            count = vote[1] + 1 if vote and vote[0] == cat_name else 1
+                            self._nondeck[slot] = (cat_name, count)
+                            known = count >= _NONDECK_HOLD
+                        else:
+                            self._nondeck.pop(slot, None)
                     if known:
                         name, score, lead = cat_name, cat_score, cat_lead
+            if known:
+                vote = self._nondeck.get(slot)
+                if vote and vote[0] != name:
+                    self._nondeck.pop(slot, None)  # slot resolved to something else
             hand.append(HandCard(slot, name if known else "unknown", _is_lit(reference, slot)))
-        self.next_card = self._read_next(reference)
+        self.next_card = self._read_next(reference, deck)
         return tuple(hand)
 
-    def _read_next(self, reference: numpy.ndarray) -> str | None:
+    def _read_next(self, reference: numpy.ndarray, deck: frozenset[str] | set[str]) -> str | None:
         """The thumbnail sits a pixel or two differently from frame to frame, so a few nearby boxes are
-        tried and the best score wins."""
+        tried and the best score wins. The next card is always one of ours: a non-deck name must hold
+        for _NONDECK_HOLD consecutive frames (stale deck vs. live loadout) or it returns None."""
         x, y, width, _ = _NEXT_BOX
         best: tuple[float, str | None, float] = (0.0, None, 0.0)
         for dx, dy, dw in itertools.product((-1, 0, 1), (-2, 0, 2), (0, 1, 2)):
@@ -510,7 +528,18 @@ class HandReader:
             if score > best[0]:
                 best = (score, name, lead)
         score, name, lead = best
-        return name if score >= _NEXT_MATCH and lead >= _MATCH_MARGIN else None
+        if score < _NEXT_MATCH or lead < _MATCH_MARGIN or name is None:
+            self._next_vote = None
+            return None
+        if name in deck:
+            self._next_vote = None
+            return name
+        if self._next_vote and self._next_vote[0] == name:
+            count = self._next_vote[1] + 1
+        else:
+            count = 1
+        self._next_vote = (name, count)
+        return name if count >= _NONDECK_HOLD else None
 
 
 def read_hand(frame: numpy.ndarray) -> tuple[HandCard, ...]:

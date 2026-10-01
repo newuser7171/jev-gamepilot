@@ -56,10 +56,6 @@ def find_units(
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     hue, saturation, value = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     white = (saturation < 40) & (value > 235)
-    # The digit's dark outline cuts gaps into the badge. A brush that grows with the picture closes them.
-    brush = max(3, round(1.5 * scale) * 2 + 1)
-    kernel = numpy.ones((brush, brush), numpy.uint8)
-
     units = []
     for owner, (low, high) in _TEAM_HUES.items():
         team = (hue >= low) & (hue <= high)
@@ -69,7 +65,10 @@ def find_units(
             mask[
                 int(y0 * frame_height) : int(y1 * frame_height), int(x0 * frame_width) : int(x1 * frame_width)
             ] = 0
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        # No morphological closing. The "mine" hue window (98-111) also covers the arena's water,
+        # its bridges and the timber, which measure hue 100 at saturation 127+, so the closing brush
+        # welded every badge into one arena-sized blob that then failed the size test. Measured on a
+        # live 1080x2340 frame: closing found 0 units, no closing found both.
         _, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         for x, y, width, height, _area in stats[1:]:
             # The badge is a square at the top-left of its shape. A health bar makes the shape wider than that

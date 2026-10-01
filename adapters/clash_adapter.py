@@ -13,7 +13,10 @@ Supports:
 """
 
 import os
+import json
+import threading
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Tuple, Optional, List, Dict
@@ -53,6 +56,28 @@ from clash_jev.learn import (
     teach_with_canaries,
 )
 from clash_jev.playstyle import PlayStyle, load_active as load_active_style, set_active as set_active_style, distil_from_journal
+from universal_vision import UniversalSceneState
+
+# Cloud responses must pick a real strategy — model improv names get dropped.
+_VALID_STRATEGY_NAMES = frozenset(s.name for s in STRATEGIES)
+
+# Lumma-fev on this CPU: the full STRATEGY_INSTRUCTIONS payload decides in
+# ~17-20s, slim text in ~4s. Tier-1 therefore never blocks on the model — a
+# background thread refreshes a cache and decide() only reads it (see
+# _lumma_loop). Slim criteria keep each strategy's first defining sentence.
+SLIM_STRATEGY_INSTRUCTIONS = (
+    "Live Clash Royale match. Goal: destroy enemy towers. State fields are "
+    "self-describing; `elixir` is what you hold now. Options are the full "
+    "strategies including playing nothing. Choose the strategy to follow right now."
+)
+
+
+def _slim_strategy_criteria() -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for s in STRATEGIES:
+        first = (s.meaning.split(". ")[0] or s.meaning).strip()
+        out[s.name] = first[:90] or s.name
+    return out
 
 # Clash Royale real max ≈ 3 min regular + ~2 min OT. Anything past this is a
 # stale battle clock (entry 60 was 7.19h), never a real match — abort it.
@@ -127,6 +152,8 @@ class TacticalReflexPolicy:
         self.style: PlayStyle = style if style is not None else load_active_style()
         # Set by evaluate_strategy when the opponent-elixir gate returned this call.
         self._gate_fired = False
+        # Consecutive pure-save decisions — feeds the anti-passivity breaker.
+        self._save_streak = 0
 
     def _style_tempo(self, state: BattleState) -> Tuple[int, int]:
         """(save_below, push_at) with tune grid + cloned style offsets applied."""
@@ -211,6 +238,29 @@ class TacticalReflexPolicy:
         return "push_left" if (self._push_counter % 2 == 0) else "push_right"
 
     def evaluate_strategy(self, state: BattleState, threat_urgency: float = 0.0) -> str:
+        # Anti-passivity breaker: 38% of journal battles sit at >=40% save_elixir
+        # decisions (18.8 deploys/min vs 25+ in active games). Every third
+        # consecutive save with banked elixir and a playable cheap card leaks a
+        # cycle for chip pressure instead of holding dead air. Threat defence
+        # above never reaches this wrapper's conversion (their saves are <3 elixir,
+        # which fails the affordability gate).
+        if state.elapsed_s < 2.0:
+            self._save_streak = 0  # new battle, no inherited hold streak
+        choice = self._evaluate_strategy_core(state, threat_urgency)
+        if choice == "save_elixir":
+            self._save_streak += 1
+            if (
+                self._save_streak >= 3
+                and state.elixir >= 3
+                and any((info(c.name).cost or 9) <= 3 for c in state.hand)
+            ):
+                self._save_streak = 0
+                return "cycle"
+            return choice
+        self._save_streak = 0
+        return choice
+
+    def _evaluate_strategy_core(self, state: BattleState, threat_urgency: float = 0.0) -> str:
         self._gate_fired = False
         save_below, push_at = self._style_tempo(state)
         st = self.style
@@ -849,10 +899,53 @@ class ClashBattleAdapter:
         try:
             from typesafe_sdk import TypeSafeClient, RetryPolicy
             self.jev_client = TypeSafeClient(
-                retry=RetryPolicy(max_retries=1, backoff_initial=0.1, backoff_max=0.2, timeout=1.8)
+                retry=RetryPolicy(max_retries=1, backoff_initial=0.1, backoff_max=0.2, timeout=1.8),
+                base_url=os.environ.get("TYPESAFE_BASE_URL") or None,
             )
         except Exception:
             self.jev_client = None
+
+        # Local Lumma strategy tier: model decides on a daemon thread, Tier-1
+        # reads the cache only, so combat never waits on CPU inference.
+        self._lumma_lock = threading.Lock()
+        self._lumma_cache: Optional[Dict[str, Any]] = None
+        self._lumma_thread: Optional[threading.Thread] = None
+        self._lumma_model_dir = os.environ.get("LOCAL_STRATEGY_DIR", "").strip()
+        self._lumma_min_conf = float(os.environ.get("LUMMA_MIN_CONF", "0.30"))
+        self._lumma_max_age = float(os.environ.get("LUMMA_MAX_AGE_S", "8.0"))
+        self._lumma_refresh_s = float(os.environ.get("LUMMA_REFRESH_S", "0.5"))
+        self._lumma_error: Optional[str] = None
+        if self._lumma_model_dir and Path(self._lumma_model_dir).exists():
+            self._start_lumma_thread()
+
+        # Local fusion tier: UniversalBrain.query_jev_universal arrives via
+        # attach_fusion() (wired at brain init). Same cache-thread contract as
+        # lumma — the ladder (openjev -> fastino -> gliner -> llm2jev) refreshes
+        # on this daemon; Tier-1 only ever reads the cache at 0ms.
+        self._fusion_query = None
+        self._fusion_profile = None
+        self._fusion_lock = threading.Lock()
+        self._fusion_cache: Optional[Dict[str, Any]] = None
+        self._fusion_thread: Optional[threading.Thread] = None
+        self._fusion_min_conf = float(os.environ.get("FUSION_MIN_CONF", "0.55"))
+        self._fusion_max_age = float(os.environ.get("FUSION_MAX_AGE_S", "8.0"))
+        self._fusion_refresh_s = float(os.environ.get("FUSION_REFRESH_S", "0.75"))
+        self._fusion_error: Optional[str] = None
+        self._last_frame: Optional[np.ndarray] = None
+        self._last_threats: List[Any] = []
+
+        # Cloud circuits: three consecutive fails open a cooldown (60s, then
+        # 2/3/4min as probes keep failing) so a dead provider costs one probe
+        # per window instead of a blocking HTTP round-trip every decision.
+        # "cloud" = legacy typesafe System One, "respan" = Respan gateway.
+        self._cloud_fail_streak = 0
+        self._cloud_dead_until = 0.0
+        self._cloud_last_error: Optional[str] = None
+        self._respan_fail_streak = 0
+        self._respan_dead_until = 0.0
+        self._respan_last_error: Optional[str] = None
+        self._cloud_timeout_s = float(os.environ.get("CLOUD_TIMEOUT_S", "6.0"))
+        self.CLOUD_MIN_CONF = 0.55
 
         # Try initializing local Laya model if installed
         self.laya_agent = None
@@ -1130,6 +1223,360 @@ class ClashBattleAdapter:
             behind=self.tactical_policy._behind(state),
         )
 
+    def _start_lumma_thread(self) -> None:
+        if self._lumma_thread and self._lumma_thread.is_alive():
+            return
+        self._lumma_thread = threading.Thread(
+            target=self._lumma_loop, name="lumma-strategy", daemon=True
+        )
+        self._lumma_thread.start()
+
+    def _lumma_load(self):
+        import torch
+
+        # default torch intra-op is 4 on this box; 8 measured ~20% faster decides
+        try:
+            torch.set_num_threads(int(os.environ.get("LUMMA_TORCH_THREADS", "8")))
+        except Exception:
+            pass
+        import lumma_fev
+
+        return lumma_fev.load(self._lumma_model_dir)
+
+    def _lumma_refresh_once(self, model) -> bool:
+        state = self._last_state
+        if state is None:
+            return False
+        from clash_jev.policy import build_state as jev_build_state
+
+        # build_state embeds a 9KB static game tutorial under "game" for the
+        # cloud tier; the local tier carries its own slim instructions, so drop
+        # it and keep only volatile match data. Hand cards also carry full
+        # tomes (description/strengths/weaknesses) sized for the cloud tier —
+        # strategy choice needs name/cost/type only.
+        state_blob = jev_build_state(state)
+        if isinstance(state_blob, dict):
+            state_blob.pop("game", None)
+            cards = state_blob.get("hand")
+            if isinstance(cards, list):
+                state_blob["hand"] = [
+                    {
+                        "card": c.get("card"),
+                        "elixir_cost": c.get("elixir_cost"),
+                        "elixir_left_after_playing": c.get("elixir_left_after_playing"),
+                        "type": c.get("type"),
+                        "class": c.get("class"),
+                        "targets": c.get("targets"),
+                    }
+                    for c in cards
+                    if isinstance(c, dict)
+                ]
+
+        t0 = time.perf_counter()
+        ans = model.decide(
+            state=state_blob,
+            questions={
+                "strategy": {
+                    "type": "choice",
+                    "instructions": SLIM_STRATEGY_INSTRUCTIONS,
+                    "criteria": _slim_strategy_criteria(),
+                }
+            },
+        )
+        a = ans["strategy"]
+        probs = a.get("probabilities") or {}
+        conf = float(probs.get(a.get("choice"), 0.0)) or float(a.get("confidence") or 0.0)
+        with self._lumma_lock:
+            self._lumma_cache = {
+                "strategy": a.get("choice"),
+                "conf": conf,
+                "ts": time.time(),
+                "ms": round((time.perf_counter() - t0) * 1000, 1),
+            }
+        return True
+
+    def _lumma_loop(self) -> None:
+        try:
+            model = self._lumma_load()
+        except Exception as exc:
+            self._lumma_error = f"load: {exc!r}"
+            return
+        while True:
+            try:
+                self._lumma_refresh_once(model)
+            except Exception as exc:
+                self._lumma_error = f"refresh: {exc!r}"
+            time.sleep(self._lumma_refresh_s)
+
+    def _lumma_snapshot(self) -> Optional[Dict[str, Any]]:
+        with self._lumma_lock:
+            if not self._lumma_cache:
+                return None
+            snap = dict(self._lumma_cache)
+        age = time.time() - snap["ts"]
+        if age > self._lumma_max_age:
+            return None
+        snap["age"] = round(age, 2)
+        return snap
+
+    def _lumma_pick(self, immediate_contact: bool) -> Optional[Tuple[str, float]]:
+        if immediate_contact:
+            return None
+        snap = self._lumma_snapshot()
+        if not snap or not snap.get("strategy"):
+            return None
+        if snap["strategy"] not in {s.name for s in STRATEGIES}:
+            return None
+        if float(snap["conf"]) < self._lumma_min_conf:
+            return None
+        return str(snap["strategy"]), float(snap["conf"])
+
+    def attach_fusion(self, query, profile) -> None:
+        """Wire UniversalBrain.query_jev_universal as the Tier-1 fusion engine.
+
+        The adapter never calls the brain inline: a daemon thread refreshes a
+        strategy cache so combat reads stay 0ms even when the ladder escalates
+        to 50-70s llm2jev CPU evals.
+        """
+        if query is None or profile is None:
+            return
+        self._fusion_query = query
+        self._fusion_profile = profile
+        self._start_fusion_thread()
+
+    def _start_fusion_thread(self) -> None:
+        if self._fusion_thread and self._fusion_thread.is_alive():
+            return
+        self._fusion_thread = threading.Thread(
+            target=self._fusion_loop, name="clash-fusion", daemon=True
+        )
+        self._fusion_thread.start()
+
+    @staticmethod
+    def _fusion_lane_threat(state: BattleState) -> float:
+        """Lane pressure -> scene urgency, same numbers decide() derives."""
+        lane_enemy = (
+            state.left.enemy_on_my_side
+            + state.right.enemy_on_my_side
+            + state.left.enemy_at_bridge
+            + state.right.enemy_at_bridge
+        )
+        if lane_enemy <= 0:
+            return 0.0
+        depth = state.left.enemy_on_my_side + state.right.enemy_on_my_side
+        return min(0.95, 0.55 + 0.08 * depth)
+
+    @staticmethod
+    def _fusion_map_strategy(action: Optional[str], urgency: float) -> Optional[str]:
+        """Profile action space -> clash strategy vocabulary.
+
+        deploy_clash_card needs the strategy-tier 4-tuple and spells have no
+        strategy slot — both skip the cache so tactical_reflex owns them.
+        Lane deploys are intent-resolved: under live threat they defend that
+        lane, otherwise they commit an attack on it.
+        """
+        if action in ("deploy_clash_card", "deploy_spell_center", "start_battle", "confirm_ok"):
+            return None
+        if action == "deploy_defense_center":
+            return "defend_centre"
+        if action == "deploy_card_left":
+            return "defend_left" if urgency > 0.40 else "push_left"
+        if action == "deploy_card_right":
+            return "defend_right" if urgency > 0.40 else "push_right"
+        if action == "wait":
+            return "save_elixir"
+        return None
+
+    def _fusion_refresh_once(self) -> bool:
+        query, profile = self._fusion_query, self._fusion_profile
+        state = self._last_state
+        if query is None or profile is None or state is None:
+            return False
+        urgency = self._fusion_lane_threat(state)
+        scene = UniversalSceneState(
+            raw_frame=self._last_frame,
+            threat_urgency=urgency,
+            threats=list(self._last_threats),
+            elixir=int(state.elixir),
+            game_phase="in_battle",
+        )
+        t0 = time.perf_counter()
+        try:
+            res = query(profile, scene)
+        except Exception as exc:
+            self._fusion_error = f"query: {exc!r}"
+            return False
+        res = res or {}
+        entry = {
+            "strategy": self._fusion_map_strategy(res.get("action"), urgency),
+            "conf": float(res.get("confidence", 0.0) or 0.0),
+            "threat": float(res.get("threat_score", 0.0) or 0.0),
+            "source": res.get("source"),
+            "action": res.get("action"),
+            "ts": time.time(),
+            "ms": round((time.perf_counter() - t0) * 1000.0, 1),
+        }
+        with self._fusion_lock:
+            self._fusion_cache = entry
+        return True
+
+    def _fusion_loop(self) -> None:
+        while True:
+            try:
+                if self._fusion_query is not None and self._last_state is not None:
+                    self._fusion_refresh_once()
+            except Exception as exc:
+                self._fusion_error = f"loop: {exc!r}"
+            time.sleep(self._fusion_refresh_s)
+
+    def _fusion_snapshot(self) -> Optional[Dict[str, Any]]:
+        with self._fusion_lock:
+            if not self._fusion_cache:
+                return None
+            snap = dict(self._fusion_cache)
+        if time.time() - snap["ts"] > self._fusion_max_age:
+            return None
+        return snap
+
+    def _fusion_pick(self, immediate_contact: bool) -> Optional[Tuple[str, float, float]]:
+        """(strategy, conf, threat) or None — never blocks decide()."""
+        if immediate_contact:
+            return None
+        snap = self._fusion_snapshot()
+        if not snap or not snap.get("strategy"):
+            return None
+        if float(snap.get("conf") or 0.0) < self._fusion_min_conf:
+            return None
+        return (
+            str(snap["strategy"]),
+            float(snap.get("conf") or 0.0),
+            float(snap.get("threat") or 0.0),
+        )
+
+    # ---------------------------------------------------------------- cloud
+
+    @staticmethod
+    def _strategy_criteria() -> Dict[str, Any]:
+        return {
+            s.name: ({"what": s.meaning, "not_for": s.not_for} if s.not_for else s.meaning)
+            for s in STRATEGIES
+        }
+
+    @staticmethod
+    def _parse_cloud_json(content: str) -> Optional[Tuple[str, float]]:
+        """Pull (strategy, conf) from a cloud reply; prose/fences tolerated."""
+        try:
+            obj = json.loads(content)
+        except Exception:
+            start, end = content.find("{"), content.rfind("}")
+            if start < 0 or end <= start:
+                return None
+            try:
+                obj = json.loads(content[start:end + 1])
+            except Exception:
+                return None
+        if not isinstance(obj, dict):
+            return None
+        name = str(obj.get("strategy", ""))
+        if name not in _VALID_STRATEGY_NAMES:
+            return None
+        try:
+            conf = float(obj.get("confidence", 0.0) or 0.0)
+        except Exception:
+            return None
+        if 1.0 < conf <= 100.0:  # model answered a percent
+            conf /= 100.0
+        return name, max(0.0, min(1.0, conf))
+
+    def _circuit_alive(self, kind: str) -> bool:
+        return time.time() >= getattr(self, f"_{kind}_dead_until")
+
+    def _circuit_fail(self, kind: str) -> None:
+        streak = getattr(self, f"_{kind}_fail_streak") + 1
+        setattr(self, f"_{kind}_fail_streak", streak)
+        if streak >= 3:
+            setattr(self, f"_{kind}_dead_until", time.time() + 60.0 * min(4, streak - 2))
+
+    def _circuit_ok(self, kind: str) -> None:
+        setattr(self, f"_{kind}_fail_streak", 0)
+        setattr(self, f"_{kind}_dead_until", 0.0)
+
+    def _respan_chat(self, system: str, user: str) -> Optional[str]:
+        """OpenAI-compatible chat against the Respan gateway. Returns content."""
+        base = os.environ.get("RESPAN_BASE_URL", "").rstrip("/")
+        key = os.environ.get("RESPAN_API_KEY")
+        if not base or not key:
+            return None
+        payload = {
+            "model": os.environ.get("RESPAN_MODEL", "gpt-5.5"),
+            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        req = urllib.request.Request(
+            f"{base}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self._cloud_timeout_s) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+        choices = body.get("choices") or []
+        if not choices:
+            return None
+        return (choices[0].get("message") or {}).get("content")
+
+    def _query_respan_strategy(self, state) -> Optional[Tuple[str, float, str]]:
+        if not self._circuit_alive("respan"):
+            return None
+        try:
+            from clash_jev.policy import build_state as jev_build_state
+
+            user = (
+                "state=" + json.dumps(jev_build_state(state), separators=(",", ":"), default=str)
+                + "\ncriteria=" + json.dumps(self._strategy_criteria(), separators=(",", ":"), default=str)
+                + '\nReply with ONLY a JSON object: {"strategy": <name>, "confidence": <0.0-1.0>}'
+            )
+            content = self._respan_chat(STRATEGY_INSTRUCTIONS, user)
+            parsed = self._parse_cloud_json(content) if content else None
+            # HTTP worked — a bad reply is a model problem, not a dead gateway.
+            self._circuit_ok("respan")
+        except Exception as exc:
+            self._respan_last_error = repr(exc)
+            self._circuit_fail("respan")
+            return None
+        if not parsed or parsed[1] < self.CLOUD_MIN_CONF:
+            return None
+        return parsed[0], parsed[1], "respan_cloud"
+
+    def _query_typesafe_strategy(self, state) -> Optional[Tuple[str, float, str]]:
+        if self.jev_client is None or not os.environ.get("TYPESAFE_API_KEY"):
+            return None
+        if not self._circuit_alive("cloud"):
+            return None
+        try:
+            from typesafe_sdk import Choice
+            from clash_jev.policy import build_state as jev_build_state
+
+            q = {"strategy": Choice(instructions=STRATEGY_INSTRUCTIONS, criteria=self._strategy_criteria())}
+            ans = self.jev_client.system_one(jev_build_state(state), q).choices["strategy"]
+            cloud_conf = float(ans.probabilities.get(ans.choice, 0.0))
+            self._circuit_ok("cloud")
+        except Exception as exc:
+            self._cloud_last_error = repr(exc)
+            self._circuit_fail("cloud")
+            return None
+        # Sub-0.55 cloud picks have been shipping conf 0.25 push_left spam at
+        # ~800ms RTT while local sits at 0.94/33ms — reject and fall through.
+        if cloud_conf < self.CLOUD_MIN_CONF:
+            return None
+        return str(ans.choice), cloud_conf, "jev_system_one"
+
     def decide(
         self,
         frame_bgr: np.ndarray,
@@ -1146,6 +1593,8 @@ class ClashBattleAdapter:
         """
         t0 = time.time()
         state = self.extract_state_from_frame(frame_bgr, cached_elixir=current_elixir, threats=threats)
+        self._last_frame = frame_bgr
+        self._last_threats = list(threats) if threats else []
         self.tactical_policy._gate_fired = False
 
         # Lane pressure is ground truth for urgency — vision red-bars miss bridge
@@ -1171,32 +1620,35 @@ class ClashBattleAdapter:
         # half so defend taps land inside the engagement window.
         immediate_contact = lane_enemy > 0 or float(threat_urgency or 0.0) >= 0.50
 
-        # Attempt Jev cloud System One if configured
-        if (
-            not immediate_contact
-            and self.jev_client is not None
-            and os.environ.get("TYPESAFE_API_KEY")
-        ):
-            try:
-                from typesafe_sdk import Choice
-                from clash_jev.policy import build_state as jev_build_state
+        # Local fusion advice from the brain's escalation ladder (cached by the
+        # fusion thread; openjev/fastino/gliner/llm2jev tiers rank strategies).
+        fusion_pick = self._fusion_pick(immediate_contact)
+        if fusion_pick:
+            chosen_strategy, confidence, fusion_threat = fusion_pick
+            engine_source = "fusion_local"
+            # Ladder threat (gliner/llm2jev) can catch pressure vision missed.
+            if fusion_threat > float(threat_urgency or 0.0):
+                threat_urgency = min(0.95, fusion_threat)
 
-                criteria = {
-                    s.name: {"what": s.meaning, "not_for": s.not_for} if s.not_for else s.meaning
-                    for s in STRATEGIES
-                }
-                q = {"strategy": Choice(instructions=STRATEGY_INSTRUCTIONS, criteria=criteria)}
-                sent_state = jev_build_state(state)
-                ans = self.jev_client.system_one(sent_state, q).choices["strategy"]
-                cloud_conf = float(ans.probabilities.get(ans.choice, 0.0))
-                # Sub-0.55 cloud picks have been shipping conf 0.25 push_left spam at
-                # ~800ms RTT while local sits at 0.94/33ms — reject and fall through.
-                if cloud_conf >= 0.55:
-                    chosen_strategy = ans.choice
-                    engine_source = "jev_system_one"
-                    confidence = cloud_conf
-            except Exception:
-                chosen_strategy = None
+        # Local Lumma strategy advice from the async cache (0ms read; falls to
+        # tactical_reflex whenever the cache is cold, stale or diffuse).
+        lumma_pick = self._lumma_pick(immediate_contact)
+        if lumma_pick:
+            chosen_strategy = lumma_pick[0]
+            engine_source = "lumma_local"
+            confidence = lumma_pick[1]
+
+        # Cloud tier behind fail-streak circuits: Respan gateway first (needs
+        # Credits/Providers activation), legacy typesafe System One second.
+        # Either circuit open => instant skip, no blocking round-trip.
+        if chosen_strategy is None and not immediate_contact:
+            cloud_pick = None
+            if os.environ.get("RESPAN_API_KEY") and os.environ.get("RESPAN_BASE_URL"):
+                cloud_pick = self._query_respan_strategy(state)
+            if cloud_pick is None:
+                cloud_pick = self._query_typesafe_strategy(state)
+            if cloud_pick:
+                chosen_strategy, confidence, engine_source = cloud_pick
 
         # Fallback to local Tactical Reflex
         if not chosen_strategy:

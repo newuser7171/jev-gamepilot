@@ -9,15 +9,11 @@
   "opening_patience_s": 6.0,
   "lane_bias": "balanced",
   "aggression": 0.55,
-  "source": "observed cards: archers, bomber, goblins, knight, mini_pekka, minions, skeletons, spear_goblins",
+  "source": "observed cards: archers, goblins, mini_pekka, spear_goblins",
   "deck": [
     "archers",
-    "bomber",
     "goblins",
-    "knight",
     "mini_pekka",
-    "minions",
-    "skeletons",
     "spear_goblins"
   ]
 }

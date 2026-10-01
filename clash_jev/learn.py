@@ -21,6 +21,27 @@ from typing import Any, Iterable, Optional
 
 LEARN_DIR = Path(__file__).resolve().parent
 JOURNAL_PATH = LEARN_DIR / "battle_journal.jsonl"
+# Below this, a "battle" is an end-screen/reconnect artifact: the recorded
+# deploys/strategy counts are physically impossible for the elapsed time
+# (e.g. 5 deploys + 3 crowns in 4s). Audit: 60 of 189 decided rows were <10s.
+MIN_REAL_BATTLE_S = 10.0
+
+
+def is_played_game(row: dict) -> bool:
+    """True only for decided battles long enough to have actually been played.
+
+    Rows without elapsed_s predate the field and keep counting; malformed
+    elapsed values are dropped — unverifiable rows teach nothing.
+    """
+    if row.get("outcome") not in ("win", "loss", "draw"):
+        return False
+    elapsed = row.get("elapsed_s")
+    if elapsed is None:
+        return True
+    try:
+        return float(elapsed) >= MIN_REAL_BATTLE_S
+    except (TypeError, ValueError):
+        return False
 PARAMS_PATH = LEARN_DIR / "tuned_params.json"
 
 # Discrete grids — movement only ever steps to an adjacent cell.
@@ -200,7 +221,7 @@ class SelfImprover:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if row.get("outcome") not in ("win", "loss", "draw"):
+            if not is_played_game(row):
                 continue
             p = TuneParams.from_dict(row.get("params"))
             key = p.key()

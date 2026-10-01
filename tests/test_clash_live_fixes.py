@@ -5,6 +5,10 @@ from unittest.mock import patch
 
 import numpy
 
+import os
+
+os.environ["LOCAL_STRATEGY_DIR"] = ""  # never boot the model inside unit tests
+
 from adapters.clash_adapter import TacticalReflexPolicy
 from clash_jev.hand import (
     HandReader,
@@ -157,7 +161,9 @@ class CatalogHandFallbackTests(unittest.TestCase):
             hand = reader.read(numpy.zeros((633, 419, 3), dtype=numpy.uint8))
         self.assertTrue(all(c.name == "unknown" for c in hand), [c.name for c in hand])
 
-    def test_catalog_accepts_confident_non_deck(self):
+    def test_catalog_confident_non_deck_needs_second_read(self):
+        # First confident non-deck frame is unknown (noise must not name a card we hold);
+        # the same candidate on the next frame is the real loadout change.
         reader = HandReader()
         with patch.object(reader.bank, "match", return_value=(None, 0.0, 1.0)), patch.object(
             reader.catalog, "match", return_value=("skeletons", 0.52, 0.08)
@@ -170,8 +176,48 @@ class CatalogHandFallbackTests(unittest.TestCase):
         ), patch(
             "clash_jev.hand._shape", return_value=numpy.zeros(224, dtype=numpy.float32)
         ):
-            hand = reader.read(numpy.zeros((633, 419, 3), dtype=numpy.uint8))
-        self.assertTrue(all(c.name == "skeletons" for c in hand), [c.name for c in hand])
+            first = reader.read(numpy.zeros((633, 419, 3), dtype=numpy.uint8))
+            second = reader.read(numpy.zeros((633, 419, 3), dtype=numpy.uint8))
+        self.assertTrue(all(c.name == "unknown" for c in first), [c.name for c in first])
+        self.assertTrue(all(c.name == "skeletons" for c in second), [c.name for c in second])
+
+    def test_non_deck_streak_resets_on_different_candidate(self):
+        # skeletons, then a confident golem flick, then skeletons again: the golem frame breaks
+        # the streak, so skeletons needs two more frames before it is trusted.
+        reader = HandReader()
+        frames = [
+            ("skeletons", 0.52, 0.08),
+            ("golem", 0.52, 0.08),
+            ("skeletons", 0.52, 0.08),
+            ("skeletons", 0.52, 0.08),
+        ]
+        got = []
+        calls = {"i": 0}
+
+        def catalog_per_read(*_args, **_kwargs):
+            # catalog.match fires once per slot; hold the candidate constant within a read.
+            value = frames[min(calls["i"] // 4, len(frames) - 1)]
+            calls["i"] += 1
+            return value
+
+        with patch.object(reader.bank, "match", return_value=(None, 0.0, 1.0)), patch.object(
+            reader.catalog, "match", side_effect=catalog_per_read
+        ), patch.object(reader, "_read_next", return_value=None), patch(
+            "clash_jev.hand._is_empty", return_value=False
+        ), patch("clash_jev.hand._is_lit", return_value=True), patch(
+            "clash_jev.hand._reference", side_effect=lambda f: f
+        ), patch(
+            "clash_jev.hand._detail", return_value=numpy.zeros(224, dtype=numpy.float32)
+        ), patch(
+            "clash_jev.hand._shape", return_value=numpy.zeros(224, dtype=numpy.float32)
+        ):
+            for _ in frames:
+                hand = reader.read(numpy.zeros((633, 419, 3), dtype=numpy.uint8))
+                got.append([c.name for c in hand])
+        self.assertTrue(all(n == "unknown" for n in got[0]), got[0])
+        self.assertTrue(all(n == "unknown" for n in got[1]), got[1])
+        self.assertTrue(all(n == "unknown" for n in got[2]), got[2])
+        self.assertTrue(all(n == "skeletons" for n in got[3]), got[3])
 
     def test_player_deck_is_stale_vs_live_skeletons(self):
         # Documents the live finding: Skeletons appeared in hand but not in taught deck.
@@ -210,9 +256,22 @@ class InDeckThinLeadTests(unittest.TestCase):
         self.assertTrue(all(c.name == "unknown" for c in hand), [c.name for c in hand])
 
     def test_confident_non_deck_catalog_still_wins_without_bank(self):
-        # Real loadout change: bank has no candidate, catalog may name a non-deck card.
+        # Real loadout change: bank has no candidate, catalog names a non-deck card — after
+        # it holds for a second consecutive frame (streak gate).
         reader = HandReader()
-        hand = self._read(reader, (None, 0.0, 1.0), ("skeletons", 0.52, 0.08))
+        with patch.object(reader.bank, "match", return_value=(None, 0.0, 1.0)), patch.object(
+            reader.catalog, "match", return_value=("skeletons", 0.52, 0.08)
+        ), patch.object(reader, "_read_next", return_value=None), patch(
+            "clash_jev.hand._is_empty", return_value=False
+        ), patch("clash_jev.hand._is_lit", return_value=True), patch(
+            "clash_jev.hand._reference", side_effect=lambda f: f
+        ), patch(
+            "clash_jev.hand._detail", return_value=numpy.zeros(224, dtype=numpy.float32)
+        ), patch(
+            "clash_jev.hand._shape", return_value=numpy.zeros(224, dtype=numpy.float32)
+        ):
+            hand = reader.read(numpy.zeros((633, 419, 3), dtype=numpy.uint8))
+            hand = reader.read(numpy.zeros((633, 419, 3), dtype=numpy.uint8))
         self.assertTrue(all(c.name == "skeletons" for c in hand), [c.name for c in hand])
 
 

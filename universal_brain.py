@@ -183,6 +183,22 @@ class UniversalBrain:
         self.simple_jev_key = os.getenv("FEATHERLESS_API_KEY", "").strip()
         self._simple_jev_dead = False
         self._simple_jev_last_at = 0.0
+        # Fastino — hosted GLiNER2.5-Decide (OpenAI-compatible /v1/chat/completions
+        # + GLiNER2 schema.classifications). Tier before local GLiNER: no 1.9GB
+        # weight load, ~hosted latency. Circuit on auth; 5xx/billing = cooldown.
+        self.fastino_url = (
+            os.getenv("FASTINO_URL", "https://api.fastino.ai/v1").strip().rstrip("/")
+            or "https://api.fastino.ai/v1"
+        )
+        self.fastino_key = os.getenv("FASTINO_API_KEY", "").strip()
+        self.fastino_model = (
+            os.getenv("FASTINO_GLINER_MODEL", "fastino/gliner2.5-multi-v1").strip()
+            or "fastino/gliner2.5-multi-v1"
+        )
+        self.fastino_timeout = _env_float("FASTINO_TIMEOUT", 4.0)
+        self._fastino_dead = False
+        self._fastino_last_at = 0.0
+        self._fastino_retry_at = 0.0
         # Bev — Reza2kn/Bev decision service (Ternary-Bonsai-2-27B) on loopback HTTP.
         self.bev_url = os.getenv("BEV_URL", "http://127.0.0.1:18781").rstrip("/") or "http://127.0.0.1:18781"
         self.bev_model = os.getenv("BEV_MODEL", "bev-bonsai-27b").strip() or "bev-bonsai-27b"
@@ -216,6 +232,19 @@ class UniversalBrain:
         self._start_llm2jev_loader()
         # Background openjev load (local weights under models/openjev).
         self._start_openjev_loader()
+        # Clash fusion wiring: hand the local escalation ladder to the adapter's
+        # Tier-1 cache thread — the clash path returns from the reflex branch
+        # before get_action ever reaches fusion, so the adapter reads it here.
+        if self.clash_adapter is not None:
+            try:
+                from profile_manager import ProfileManager
+
+                self.clash_adapter.attach_fusion(
+                    self.query_jev_universal,
+                    ProfileManager().get_profile("mobile_clash_royale"),
+                )
+            except Exception:
+                pass
 
     def _start_llm2jev_loader(self):
         """Background-loads LLM2Jev Transformers backend when LLM2JEV_MODEL is set."""
@@ -372,8 +401,9 @@ class UniversalBrain:
         1. Fast local in-process inference via Laya (15-25ms, zero network overhead).
         2. If Laya confidence is high (>= LAYA_FAST_PATH_CONF, default 0.88) AND
            not a passive commit under live threat, commit immediately.
-        3. Escalation: local openjev first (fast NLI cross-encoder), then local
-           GLiNER2.5-Decide (label-set classifier), then local LLM2Jev only when
+        3. Escalation: local openjev first (fast NLI cross-encoder), then Fastino
+           hosted GLiNER2.5-Decide (~hosted latency, zero RAM load), then local
+           GLiNER2.5-Decide fallback, then local LLM2Jev only when
            both are missing/weak (50s+ CPU), then Bev, TypeSafe cloud, Simple Jev,
            then classifier.dev.
         4. If both provide decisions, fuse them into 'laya_jev_consensus' with blended confidence.
@@ -389,16 +419,16 @@ class UniversalBrain:
                 self.last_decision = laya_res
             return
 
-        # Secondary opinion / Escalation: local openjev → GLiNER → LLM2Jev, then local Bev
-        # (loopback SystemOne), then TypeSafe cloud, Simple Jev, then classifier.dev.
+        # Secondary opinion / Escalation: local openjev → Fastino hosted GLiNER → local GLiNER
+        # → LLM2Jev, then local Bev (loopback SystemOne), then TypeSafe cloud, Simple Jev, then classifier.dev.
         jev_res = self._local_escalation(profile, scene)
         if not jev_res:
             jev_res = self._query_bev(profile, scene)
-        if not jev_res and self.client is not None and os.getenv("TYPESAFE_API_KEY"):
+        if not jev_res:
             jev_res = self._query_typesafe_sdk(profile, scene)
-        if not jev_res and not self._simple_jev_dead:
+        if not jev_res:
             jev_res = self._query_simple_jev(profile, scene)
-        if not jev_res and not self._classifier_dead:
+        if not jev_res:
             jev_res = self._query_classifier_dev(profile, scene)
 
         # Consensus Fusion: Merge Laya + Jev decisions
@@ -446,20 +476,33 @@ class UniversalBrain:
     def _local_escalation(
         self, profile: GameProfile, scene: UniversalSceneState
     ) -> Optional[Dict[str, Any]]:
-        """openjev first (fast); GLiNER mid-tier on first weak openjev; LLM2Jev last."""
+        """openjev first (fast); Fastino hosted GLiNER next (no 1.9GB load);
+        local GLiNER fallback when hosted is absent; LLM2Jev last."""
         fast = None
         if self.openjev_engine is not None:
             fast = self._query_local_openjev(profile, scene)
         if fast and float(fast.get("confidence", 0.0) or 0.0) >= self.local_accept_conf:
             return fast
-        # Lazy-load GLiNER mid tier only when openjev is missing or unsure.
-        if self.gliner_engine is None and not self._gliner_tried:
-            self._start_gliner_loader()
+        # Hosted Fastino GLiNER before local weights: hosted latency, zero
+        # RAM load; local loader only fires when the hosted tier is absent.
         mid = None
-        if self.gliner_engine is not None:
-            mid = self._query_gliner_decide(profile, scene)
+        if self.fastino_key and not self._fastino_dead:
+            mid = self._query_fastino_gliner(profile, scene)
             if mid and float(mid.get("confidence", 0.0) or 0.0) >= self.local_accept_conf:
                 return mid
+        # Lazy-load GLiNER mid tier only when openjev and hosted are missing or unsure.
+        if self.gliner_engine is None and not self._gliner_tried and mid is None:
+            self._start_gliner_loader()
+        if self.gliner_engine is not None:
+            local_mid = self._query_gliner_decide(profile, scene)
+            if local_mid and float(local_mid.get("confidence", 0.0) or 0.0) >= self.local_accept_conf:
+                return local_mid
+            if local_mid and (
+                mid is None
+                or float(local_mid.get("confidence", 0.0) or 0.0)
+                > float(mid.get("confidence", 0.0) or 0.0)
+            ):
+                mid = local_mid
         if self.llm2jev_engine is None:
             return fast or mid
         deep = self._query_local_llm2jev(profile, scene)
@@ -515,11 +558,11 @@ class UniversalBrain:
         jev_res = self._local_escalation(profile, scene)
         if not jev_res:
             jev_res = self._query_bev(profile, scene)
-        if not jev_res and self.client is not None and os.getenv("TYPESAFE_API_KEY"):
+        if not jev_res:
             jev_res = self._query_typesafe_sdk(profile, scene)
-        if not jev_res and not self._simple_jev_dead:
+        if not jev_res:
             jev_res = self._query_simple_jev(profile, scene)
-        if not jev_res and not self._classifier_dead:
+        if not jev_res:
             jev_res = self._query_classifier_dev(profile, scene)
 
         if laya_res and jev_res:
@@ -920,6 +963,170 @@ class UniversalBrain:
         finally:
             self._openjev_lock.release()
 
+    @staticmethod
+    def _fastino_task_node(payload: Any, task: str) -> Any:
+        """Locate one classification task's raw value in a Fastino response."""
+        if not isinstance(payload, dict):
+            return None
+        if task in payload:
+            return payload[task]
+        inner = payload.get("classifications")
+        if isinstance(inner, dict) and task in inner:
+            return inner[task]
+        return None
+
+    @staticmethod
+    def _fastino_label_conf(raw: Any, _depth: int = 0) -> Tuple[Optional[str], Optional[float]]:
+        """Normalize one task's raw value to (label, confidence).
+
+        Hosted response shape is not pinned by the OpenAPI spec: accepts plain
+        strings, {label, confidence} dicts, label lists, and probability maps
+        (argmax). Confidence clamped to 0-1 (percent scores > 1 divided by 100).
+        """
+        if _depth > 3 or raw is None:
+            return None, None
+        if isinstance(raw, str):
+            return (raw.strip() or None), None
+        if isinstance(raw, bool):
+            return None, None
+        if isinstance(raw, (int, float)):
+            return str(raw), None
+        if isinstance(raw, list):
+            for item in raw:
+                label, conf = UniversalBrain._fastino_label_conf(item, _depth + 1)
+                if label:
+                    return label, conf
+            return None, None
+        if isinstance(raw, dict):
+            conf: Optional[float] = None
+            for key in ("confidence", "score", "prob", "probability"):
+                val = raw.get(key)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    conf = float(val)
+                    if conf > 1.0 and conf <= 100.0:
+                        conf /= 100.0
+                    conf = min(1.0, max(0.0, conf))
+                    break
+            for key in ("label", "value", "class", "choice", "text", "answer", "prediction", "name"):
+                val = raw.get(key)
+                if isinstance(val, (str, int, float, list, dict)) and not isinstance(val, bool):
+                    label, deep_conf = UniversalBrain._fastino_label_conf(val, _depth + 1)
+                    if label:
+                        return label, (conf if conf is not None else deep_conf)
+            probs = raw.get("probabilities")
+            if isinstance(probs, dict) and probs:
+                best_key, best_val = None, -1.0
+                for pk, pv in probs.items():
+                    if isinstance(pv, (int, float)) and not isinstance(pv, bool) and float(pv) > best_val:
+                        best_key, best_val = pk, float(pv)
+                if best_key is not None:
+                    return str(best_key), min(1.0, max(0.0, best_val))
+        return None, None
+
+    def _query_fastino_gliner(
+        self, profile: GameProfile, scene: UniversalSceneState
+    ) -> Optional[Dict[str, Any]]:
+        """Fastino hosted GLiNER2.5-Decide (POST /chat/completions + schema.classifications).
+
+        Same three heads as the local tier: tactical_action, threat_severity,
+        is_urgent_reflex. Circuit: 401/403/404 kill the tier until restart;
+        402 + transient 4xx/5xx set a cooldown (billing errors self-heal).
+        Rate gap >= 0.5s. Never raises.
+        """
+        if not self.fastino_key or self._fastino_dead:
+            return None
+        now = time.monotonic()
+        if now < self._fastino_retry_at:
+            return None
+        if now - self._fastino_last_at < 0.5:
+            return None
+        self._fastino_last_at = now
+        t0 = time.perf_counter()
+        try:
+            situation = self._build_verbal_state(profile, scene)
+            labels = [a.name for a in profile.actions]
+            if not labels:
+                return None
+            if "wait" not in labels and profile.category != "clicker":
+                labels.append("wait")
+            payload = {
+                "model": self.fastino_model,
+                "messages": [{"role": "user", "content": situation}],
+                "schema": {
+                    "classifications": [
+                        {"task": "tactical_action", "labels": labels},
+                        {"task": "threat_severity", "labels": ["0", "1", "2", "3", "4"]},
+                        {"task": "is_urgent_reflex", "labels": ["yes", "no"]},
+                    ]
+                },
+                "include_confidence": True,
+            }
+            req = urllib.request.Request(
+                self.fastino_url + "/chat/completions",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": self.fastino_key,
+                    "User-Agent": "jev-gamepilot/2.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=self.fastino_timeout) as resp:
+                data = json.load(resp)
+            content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content")
+            parsed: Any = content
+            if isinstance(content, str):
+                try:
+                    parsed = json.loads(content)
+                except ValueError:
+                    parsed = None
+
+            action_choice, conf_raw = self._fastino_label_conf(
+                self._fastino_task_node(parsed, "tactical_action")
+            )
+            if not action_choice:
+                return None
+            action_choice = self.coerce_action_name(profile, action_choice, scene)
+            action_conf = float(conf_raw) if conf_raw is not None else 0.80
+
+            sev_label, _ = self._fastino_label_conf(
+                self._fastino_task_node(parsed, "threat_severity")
+            )
+            try:
+                danger_normalized = min(1.0, max(0.0, float(sev_label) / 4.0))
+            except (TypeError, ValueError):
+                danger_normalized = scene.threat_urgency
+
+            reflex_label, _ = self._fastino_label_conf(
+                self._fastino_task_node(parsed, "is_urgent_reflex")
+            )
+            if reflex_label and str(reflex_label).strip().lower() == "yes":
+                danger_normalized = max(danger_normalized, 0.90)
+
+            latency = (time.perf_counter() - t0) * 1000
+            target_coords = None
+            if scene.best_target:
+                target_coords = (scene.best_target.click_x, scene.best_target.click_y)
+            return {
+                "action": action_choice,
+                "threat_score": round(danger_normalized, 2),
+                "confidence": round(action_conf, 3),
+                "latency_ms": round(latency, 1),
+                "source": "fastino_gliner_decide",
+                "target_coords": target_coords,
+            }
+        except urllib.error.HTTPError as e:
+            code = getattr(e, "code", None)
+            if code in (401, 403, 404):
+                self._fastino_dead = True
+            elif code in (402, 503):
+                self._fastino_retry_at = time.monotonic() + 60.0
+            else:
+                self._fastino_retry_at = time.monotonic() + 30.0
+            return None
+        except Exception:
+            self._fastino_retry_at = time.monotonic() + 30.0
+            return None
+
     def _query_gliner_decide(
         self, profile: GameProfile, scene: UniversalSceneState
     ) -> Optional[Dict[str, Any]]:
@@ -1093,7 +1300,14 @@ class UniversalBrain:
     def _query_typesafe_sdk(
         self, profile: GameProfile, scene: UniversalSceneState
     ) -> Optional[Dict[str, Any]]:
-        """Inference via TypeSafe Jev System One cloud SDK."""
+        """Inference via TypeSafe Jev System One cloud SDK.
+
+        Self-guarding: the fusion chain calls every tier unconditionally so tier order
+        stays observable. Unconfigured credentials short-circuit here, not at the call
+        site.
+        """
+        if self.client is None or not os.getenv("TYPESAFE_API_KEY", "").strip():
+            return None
         t0 = time.perf_counter()
         try:
             situation = self._build_verbal_state(profile, scene)
