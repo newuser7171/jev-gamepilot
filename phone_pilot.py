@@ -552,6 +552,7 @@ class PhoneGamePilot:
         finally:
             self.is_running = False
             self.adb.stop_background_stream()
+            self.brain.close()
             if show_preview:
                 cv2.destroyAllWindows()
             console.print(f"\n[bold cyan]Pilot stopped. Total actions executed: {self.total_actions}[/bold cyan]")

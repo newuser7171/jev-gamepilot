@@ -1,20 +1,24 @@
 """
 Universal Jev / Laya System One Brain for Jev-GamePilot.
-Combines:
-1. High-speed local Laya decision engine (convaiinnovations/laya) for sub-30ms offline inference.
-2. Local openjev (AlexWortega/openjev Qwen3.5 NLI cross-encoder) typed-decision arbitration (fast path).
-3. Local LLM2Jev Transformers backend (LLM2JEV_MODEL) for deep offline Choice/Score/Noul arbitration when openjev is weak.
-4. Local GLiNER2.5-Decide (fastino 340M label-set classifier) as mid-tier when openjev is weak.
-5. Local Bev (Reza2kn/Bev Ternary-Bonsai-2-27B) SystemOne HTTP decision API on loopback.
-6. TypeSafe Jev System One SDK cloud API (jev-latest) as robust online fallback.
-7. Simple Jev Featherless classifier API (Choice/Score/Noul; keyless demo or FEATHERLESS_API_KEY).
-8. Keyless classifier.dev fallback for zero-config environments (circuit-broken on hard HTTP failures).
-7. Intelligent spatial & aerodynamic reflex actuator (no blind defaults; altitude & lane aware).
-8. Continuous async worker for 60+ FPS lock-free gameplay.
+
+Decision tiers, fastest first:
+1. Local Laya engine (sub-30ms, in-process).
+2. Local openjev NLI cross-encoder (typed Choice/Score/Noul).
+3. Hosted Fastino GLiNER2.5-Decide (opt-in, no local weights).
+4. Local GLiNER2.5-Decide weights (opt-in: JEV_ENABLE_GLINER=1).
+5. Local LLM2Jev Transformers backend (opt-in: LLM2JEV_MODEL).
+6. Local Bev SystemOne HTTP API on loopback.
+7. TypeSafe Jev cloud SDK, Simple Jev, then classifier.dev.
+
+Optional backends are *located* at import time (importlib.find_spec, no code
+execution) and imported inside their loader threads. That keeps `--help`, HUD
+startup and the offline test suite from paying torch/transformers import cost,
+and lets a machine without the torch stack run every heuristic tier.
 """
 
+import importlib
+import importlib.util
 import json
-import math
 import os
 import queue
 import sys
@@ -27,8 +31,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from dotenv import load_dotenv
 
-from profile_manager import GameAction, GameProfile
-from universal_vision import UniversalEntity, UniversalSceneState
+from profile_manager import GameProfile
+from universal_vision import UniversalSceneState
 
 load_dotenv()
 
@@ -44,72 +48,127 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse a boolean env override ("0"/"false"/"no"/"off" disable)."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def _module_available(name: str) -> bool:
+    """True when `name` is importable. Locates only: never executes the module."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 # Passive actions never commit on a high-threat fast path.
 _PASSIVE_ACTIONS = frozenset({"wait", "maintain_course", "stand_idle"})
 
-# Try importing local laya engine (supports both Apple Silicon MLX and standard PyTorch)
-_LAYA_AVAILABLE = False
-_LAYA_BACKEND = "none"
-try:
-    import laya_mlx as laya
-    _LAYA_AVAILABLE = True
-    _LAYA_BACKEND = "mlx"
-except ImportError:
-    try:
-        import laya
-        _LAYA_AVAILABLE = True
-        _LAYA_BACKEND = "pytorch"
-    except ImportError:
-        pass
+# Offline mode: no weight loaders, no model downloads. Set by run_tests.py and
+# safe to set by hand for a fully heuristic pilot.
+_OFFLINE = _env_flag("JEV_OFFLINE")
 
-# Try importing TypeSafe SDK
+# Laya supports both Apple Silicon MLX and standard PyTorch builds.
+_LAYA_AVAILABLE = _module_available("laya_mlx") or _module_available("laya")
+_LAYA_BACKEND = "mlx" if _module_available("laya_mlx") else ("pytorch" if _LAYA_AVAILABLE else "none")
+
+# TypeSafe SDK: cheap import, and tests patch these names directly.
 _TYPESAFE_AVAILABLE = False
 try:
     from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
+
     _TYPESAFE_AVAILABLE = True
 except ImportError:
     pass
 
-# Local LLM2Jev Transformers backend (CPU, LLM2JEV_MODEL env path / HF id).
-# Aliased to avoid colliding with typesafe_sdk Choice/Score/Noul.
-_LLM2JEV_AVAILABLE = False
-try:
-    from llm2jev import (
-        Choice as L2JChoice,
-        JevRequest as L2JJevRequest,
-        LLM2Jev as L2JEngine,
-        Noul as L2JNoul,
-        Score as L2JScore,
-        TransformersBackend as L2JTransformersBackend,
-    )
-    _LLM2JEV_AVAILABLE = True
-except ImportError:
-    L2JChoice = L2JScore = L2JNoul = None
-    L2JJevRequest = L2JEngine = L2JTransformersBackend = None
+# Local LLM2Jev backend. Symbols stay None until the loader (or a query with an
+# injected engine) actually needs them; llm2jev pulls in torch/transformers.
+_LLM2JEV_AVAILABLE = _module_available("llm2jev")
+L2JChoice = L2JScore = L2JNoul = None
+L2JJevRequest = L2JEngine = L2JTransformersBackend = None
+_LLM2JEV_IMPORT_LOCK = threading.Lock()
 
-# openjev — AlexWortega/openjev Qwen3.5 NLI cross-encoder as a local typed-decision backend.
+
+def _load_llm2jev_symbols() -> bool:
+    """Import the llm2jev symbol set once. False when the package is absent."""
+    global L2JChoice, L2JScore, L2JNoul, L2JJevRequest, L2JEngine, L2JTransformersBackend
+    if L2JChoice is not None:
+        return True
+    if not _LLM2JEV_AVAILABLE:
+        return False
+    with _LLM2JEV_IMPORT_LOCK:
+        if L2JChoice is not None:
+            return True
+        try:
+            from llm2jev import (
+                Choice as _Choice,
+                JevRequest as _JevRequest,
+                LLM2Jev as _LLM2Jev,
+                Noul as _Noul,
+                Score as _Score,
+                TransformersBackend as _TransformersBackend,
+            )
+        except ImportError:
+            return False
+        L2JChoice, L2JScore, L2JNoul = _Choice, _Score, _Noul
+        L2JJevRequest = _JevRequest
+        L2JEngine = _LLM2Jev
+        L2JTransformersBackend = _TransformersBackend
+        return True
+
+
+# openjev — AlexWortega/openjev Qwen3.5 NLI cross-encoder (local weights).
 _OPENJEV_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "openjev")
 _OPENJEV_SUBFOLDER = "qwen3.5-0.8b-nli-v5"
-_OPENJEV_AVAILABLE = False
-try:
-    if os.path.isdir(os.path.join(_OPENJEV_ROOT, _OPENJEV_SUBFOLDER)):
-        if _OPENJEV_ROOT not in sys.path:
-            sys.path.insert(0, _OPENJEV_ROOT)
-        from openjev_decide import OpenJev as OpenJevEngine  # noqa: E402
+if _OPENJEV_ROOT not in sys.path:
+    sys.path.insert(0, _OPENJEV_ROOT)
+_OPENJEV_AVAILABLE = os.path.isdir(os.path.join(_OPENJEV_ROOT, _OPENJEV_SUBFOLDER)) and (
+    _module_available("openjev_decide")
+)
+OpenJevEngine = None  # bound inside _start_openjev_loader
 
-        _OPENJEV_AVAILABLE = True
-except Exception:
-    OpenJevEngine = None
 
-# GLiNER2.5-Decide — fastino local label-set classifier (340M DeBERTa, gliner2 API).
+# GLiNER2.5-Decide — fastino local label-set classifier (340M DeBERTa).
 _GLINER_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "gliner25_decide")
-_GLINER_AVAILABLE = False
-try:
-    from gliner2.classification import ClassificationSchema, Classifier
+_GLINER_AVAILABLE = _module_available("gliner2")
+# Local weights stay OFF unless asked for: ~1.9 GB RAM, a multi-second stall
+# while DeBERTa warms up, and a native crash on some torch/Python builds.
+_GLINER_AUTO = _env_flag("JEV_ENABLE_GLINER", False)
+ClassificationSchema = Classifier = None  # bound inside _start_gliner_loader
 
-    _GLINER_AVAILABLE = True
-except Exception:
-    ClassificationSchema = Classifier = None
+
+class _DictClassificationSchema:
+    """Minimal stand-in used only when a test injects a fake classifier engine."""
+
+    def __init__(self):
+        self.fields: Dict[str, List[str]] = {}
+
+    def single(self, name: str, labels):
+        self.fields[name] = list(labels)
+
+    def __repr__(self):
+        return f"_DictClassificationSchema({self.fields!r})"
+
+
+# Typed-question factories: dicts only appear when the package is absent, which
+# means no real engine can exist either (injected fakes ignore the shape).
+def _choice_question(**kwargs):
+    return L2JChoice(**kwargs) if L2JChoice is not None else {"type": "choice", **kwargs}
+
+
+def _score_question(**kwargs):
+    return L2JScore(**kwargs) if L2JScore is not None else {"type": "score", **kwargs}
+
+
+def _noul_question(**kwargs):
+    return L2JNoul(**kwargs) if L2JNoul is not None else {"type": "noul", **kwargs}
+
+
+def _jev_request(**kwargs):
+    return L2JJevRequest(**kwargs) if L2JJevRequest is not None else kwargs
 
 # Try importing ClashBattleAdapter
 _CLASH_ADAPTER_AVAILABLE = False
@@ -219,19 +278,26 @@ class UniversalBrain:
         }
 
         self._lock = threading.Lock()
-        self._work_queue: queue.Queue = queue.Queue(maxsize=2)
+        # Separate lock for loader lifecycle flags: never held while a model
+        # import or weight load runs, so a decision path can always read state.
+        self._loader_lock = threading.Lock()
+        self.offline = _OFFLINE
+        self.gliner_auto = _GLINER_AUTO
+        self.last_worker_error: Optional[str] = None
+        self._closed = False
         self._classifier_dead = False
+        self._work_queue: queue.Queue = queue.Queue(maxsize=2)
         self._worker_thread = threading.Thread(
             target=self._continuous_worker, daemon=True, name="UniversalBrainWorker"
         )
         self._worker_thread.start()
 
-        # Attempt background local Laya load
-        self._start_laya_loader()
-        # Background LLM2Jev load only when LLM2JEV_MODEL is set (opt-in).
-        self._start_llm2jev_loader()
-        # Background openjev load (local weights under models/openjev).
-        self._start_openjev_loader()
+        if not self.offline:
+            # Weight loaders are background threads: a slow disk or a 1.9 GB
+            # DeBERTa must never block the constructor.
+            self._start_laya_loader()
+            self._start_llm2jev_loader()
+            self._start_openjev_loader()
         # Clash fusion wiring: hand the local escalation ladder to the adapter's
         # Tier-1 cache thread — the clash path returns from the reflex branch
         # before get_action ever reaches fusion, so the adapter reads it here.
@@ -246,15 +312,26 @@ class UniversalBrain:
             except Exception:
                 pass
 
+    def _claim_loader_start(self, flag_name: str) -> bool:
+        """Atomically claim a one-shot loader start. False when already claimed."""
+        with self._loader_lock:
+            if getattr(self, flag_name):
+                return False
+            setattr(self, flag_name, True)
+            return True
+
     def _start_llm2jev_loader(self):
         """Background-loads LLM2Jev Transformers backend when LLM2JEV_MODEL is set."""
-        if not _LLM2JEV_AVAILABLE or not self.llm2jev_model or self._llm2jev_tried:
+        if not _LLM2JEV_AVAILABLE or not self.llm2jev_model:
             return
+        if not self._claim_loader_start("_llm2jev_tried"):
+            return
+        self.llm2jev_loading = True
 
         def loader():
-            self._llm2jev_tried = True
-            self.llm2jev_loading = True
             try:
+                if not _load_llm2jev_symbols():
+                    return
                 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
                 os.environ["HF_HUB_DISABLE_XET"] = "1"
                 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -278,13 +355,19 @@ class UniversalBrain:
 
     def _start_openjev_loader(self):
         """Background-load AlexWortega/openjev Qwen3.5 NLI cross-encoder (local weights)."""
-        if not _OPENJEV_AVAILABLE or self._openjev_tried:
+        if not _OPENJEV_AVAILABLE:
             return
-        self._openjev_tried = True
+        if not self._claim_loader_start("_openjev_tried"):
+            return
         self.openjev_loading = True
 
         def loader():
+            global OpenJevEngine
             try:
+                if OpenJevEngine is None:
+                    from openjev_decide import OpenJev as _OpenJev
+
+                    OpenJevEngine = _OpenJev
                 engine = OpenJevEngine.from_pretrained(
                     self.openjev_path, subfolder=self.openjev_subfolder, device="cpu"
                 )
@@ -300,18 +383,26 @@ class UniversalBrain:
 
     def _start_gliner_loader(self):
         """Background-load fastino/GLiNER2.5-Decide classifier (lazy; first weak openjev)."""
-        if not _GLINER_AVAILABLE or self._gliner_tried:
+        if not _GLINER_AVAILABLE:
             return
-        self._gliner_tried = True
+        if not self._claim_loader_start("_gliner_tried"):
+            return
         self.gliner_loading = True
 
         def loader():
+            global ClassificationSchema, Classifier
             try:
                 # gliner2 prints a Unicode banner; Windows cp1252 stdout would crash it.
                 import contextlib
                 import io
 
                 with contextlib.redirect_stdout(io.StringIO()):
+                    from gliner2.classification import (
+                        ClassificationSchema as _Schema,
+                        Classifier as _Classifier,
+                    )
+
+                    ClassificationSchema, Classifier = _Schema, _Classifier
                     if os.path.isdir(self.gliner_path):
                         engine = Classifier.from_pretrained(self.gliner_path)
                     else:
@@ -328,29 +419,37 @@ class UniversalBrain:
 
     def _start_laya_loader(self):
         """Asynchronously attempts to load local Laya model weights without network downloads."""
-        if not _LAYA_AVAILABLE or self.laya_loading or self._laya_tried:
+        if not _LAYA_AVAILABLE:
             return
+        if not self._claim_loader_start("_laya_tried"):
+            return
+        self.laya_loading = True
 
         def loader():
-            self.laya_loading = True
-            self._laya_tried = True
             # Suppress all HF download progress bars and warnings
             os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
             os.environ["HF_HUB_DISABLE_XET"] = "1"
             os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-
-            # 1. Load directly from local offline cached snapshot
-            local_dir = self._find_local_laya_checkpoint()
-            if local_dir:
+            try:
                 try:
-                    agent = laya.load(local_dir)
-                    with self._lock:
-                        self.laya_agent = agent
-                    return
-                except Exception:
-                    pass
+                    import laya_mlx as laya_mod
+                except ImportError:
+                    import laya as laya_mod
 
-            self.laya_loading = False
+                # Load only from a local cached snapshot: never stall on a download.
+                local_dir = self._find_local_laya_checkpoint()
+                if local_dir:
+                    try:
+                        agent = laya_mod.load(local_dir)
+                        with self._lock:
+                            self.laya_agent = agent
+                    except Exception:
+                        with self._lock:
+                            self.laya_agent = None
+            except ImportError:
+                pass
+            finally:
+                self.laya_loading = False
 
         threading.Thread(target=loader, daemon=True, name="LayaModelLoader").start()
 
@@ -392,8 +491,81 @@ class UniversalBrain:
                     break
                 profile, scene = task
                 self._evaluate_scene(profile, scene)
-            except Exception as e:
+            except Exception as exc:  # keep the worker alive; surface the reason
+                self.last_worker_error = f"{type(exc).__name__}: {exc}"
                 time.sleep(0.02)
+
+    def snapshot_decision(self) -> Dict[str, Any]:
+        """Thread-safe copy of the last decision (the pilot loop runs off-thread)."""
+        with self._lock:
+            return dict(self.last_decision)
+
+    def reset_decision(self, source: str = "reset") -> None:
+        """Drop the cached decision so a new profile never inherits the old one's action."""
+        with self._lock:
+            self.last_decision = {
+                "action": "wait",
+                "threat_score": 0.0,
+                "confidence": 1.0,
+                "latency_ms": 0.0,
+                "source": source,
+                "target_coords": None,
+            }
+
+    def _enqueue_scene(self, profile: GameProfile, scene: UniversalSceneState) -> None:
+        """Queue the newest scene. On backpressure drop the stalest, never the newest.
+
+        A slow tier (LLM2Jev can take tens of seconds) fills the 2-slot queue;
+        dropping the incoming scene instead would hand the pilot decisions about
+        a board that no longer exists.
+        """
+        if self._closed:
+            return
+        task = (profile, scene)
+        try:
+            self._work_queue.put_nowait(task)
+            return
+        except queue.Full:
+            pass
+        try:
+            self._work_queue.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            self._work_queue.put_nowait(task)
+        except queue.Full:
+            pass
+
+    def close(self, timeout: float = 2.0):
+        """Stop the decision worker. Idempotent; safe to call from the GUI thread."""
+        if self._closed:
+            return
+        self._closed = True
+        # Make room for the sentinel: a full queue would drop it and leave the
+        # worker blocked in get() until process exit.
+        while True:
+            try:
+                self._work_queue.put_nowait(None)
+                break
+            except queue.Full:
+                try:
+                    self._work_queue.get_nowait()
+                except queue.Empty:
+                    break
+        worker = self._worker_thread
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=timeout)
+        if self.clash_adapter is not None:
+            try:
+                self.clash_adapter.detach_fusion()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
 
     def _evaluate_scene(self, profile: GameProfile, scene: UniversalSceneState):
         """
@@ -490,8 +662,14 @@ class UniversalBrain:
             mid = self._query_fastino_gliner(profile, scene)
             if mid and float(mid.get("confidence", 0.0) or 0.0) >= self.local_accept_conf:
                 return mid
-        # Lazy-load GLiNER mid tier only when openjev and hosted are missing or unsure.
-        if self.gliner_engine is None and not self._gliner_tried and mid is None:
+        # Local weights load only when explicitly enabled (JEV_ENABLE_GLINER=1):
+        # the DeBERTa warm-up is a multi-second stall and ~1.9 GB resident.
+        if (
+            self.gliner_auto
+            and self.gliner_engine is None
+            and not self._gliner_tried
+            and mid is None
+        ):
             self._start_gliner_loader()
         if self.gliner_engine is not None:
             local_mid = self._query_gliner_decide(profile, scene)
@@ -790,7 +968,7 @@ class UniversalBrain:
                 "source": "local_laya_brain",
                 "target_coords": target_coords,
             }
-        except Exception as e:
+        except Exception:
             return None
 
     def _query_local_llm2jev(
@@ -804,6 +982,8 @@ class UniversalBrain:
         engine = self.llm2jev_engine
         if engine is None:
             return None
+        if L2JJevRequest is None:
+            _load_llm2jev_symbols()
         if not self._llm2jev_lock.acquire(blocking=False):
             return None
         t0 = time.perf_counter()
@@ -816,7 +996,7 @@ class UniversalBrain:
                 criteria["wait"] = "Hold course; horizon clear"
 
             questions = {
-                "tactical_action": L2JChoice(
+                "tactical_action": _choice_question(
                     instructions=(
                         f"Select the optimal immediate maneuver in '{profile.name}' "
                         f"to evade hazards and survive. Prefer concrete action over waiting "
@@ -824,7 +1004,7 @@ class UniversalBrain:
                     ),
                     criteria=criteria,
                 ),
-                "threat_severity": L2JScore(
+                "threat_severity": _score_question(
                     instructions="Rate immediate collision urgency on a scale from 0 to 4",
                     criteria=[
                         "0: Safe - Clear horizon",
@@ -834,11 +1014,11 @@ class UniversalBrain:
                         "4: Critical - Imminent impact",
                     ],
                 ),
-                "is_urgent_reflex": L2JNoul(
+                "is_urgent_reflex": _noul_question(
                     instructions="Should an immediate evasive maneuver be triggered right now?"
                 ),
             }
-            request = L2JJevRequest(
+            request = _jev_request(
                 state=situation,
                 model=self.llm2jev_model,
                 questions=questions,
@@ -1149,7 +1329,7 @@ class UniversalBrain:
             if "wait" not in labels and profile.category != "clicker":
                 labels.append("wait")
 
-            schema = ClassificationSchema()
+            schema = (ClassificationSchema or _DictClassificationSchema)()
             schema.single("tactical_action", labels)
             schema.single("threat_severity", ["0", "1", "2", "3", "4"])
             schema.single("is_urgent_reflex", ["yes", "no"])
@@ -2245,11 +2425,8 @@ class UniversalBrain:
             return reflex_decision
 
         # 2. Queue asynchronous brain evaluation when threats or targets are detected
-        if (scene.threat_urgency > 0.12 or scene.targets) and not self._work_queue.full():
-            try:
-                self._work_queue.put_nowait((profile, scene))
-            except queue.Full:
-                pass
+        if scene.threat_urgency > 0.12 or scene.targets:
+            self._enqueue_scene(profile, scene)
 
         with self._lock:
             cached = dict(self.last_decision)

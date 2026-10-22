@@ -5,7 +5,7 @@ Perceives the T-Rex runner, ground plane, oncoming cacti, pterodactyl birds, and
 
 from dataclasses import dataclass, field
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 

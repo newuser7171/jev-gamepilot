@@ -210,6 +210,7 @@ class FastinoEscalationTests(unittest.TestCase):
 
     def test_hosted_absent_still_lazily_loads_local_gliner(self):
         brain = make_brain()
+        brain.gliner_auto = True  # JEV_ENABLE_GLINER=1 equivalent
         with patch.object(brain, "_query_fastino_gliner", return_value=None), \
                 patch.object(brain, "_start_gliner_loader") as loader:
             res = brain._local_escalation(RUNNER, make_scene())

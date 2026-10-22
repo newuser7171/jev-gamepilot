@@ -144,10 +144,7 @@ class AutoCopyWiringTests(unittest.TestCase):
     def test_battle_end_auto_distils_style(self):
         """note_battle_end with a win journals + distils + sets active style."""
         from adapters.clash_adapter import ClashBattleAdapter
-        from clash_jev.playstyle import load_active, get_style, set_active
-        from clash_jev.playstyle import BUILTIN_STYLES
-        import tempfile, json
-        from pathlib import Path
+        import json
 
         # seed journal with enough games to trigger distil
         from clash_jev.learn import JOURNAL_PATH
@@ -163,7 +160,7 @@ class AutoCopyWiringTests(unittest.TestCase):
             ad = ClashBattleAdapter()
             ad.learner.battle_open = True
             # force a win outcome via crowns path
-            rec = ad.note_battle_end(frame_bgr=None)  # will be aborted if no crowns
+            ad.note_battle_end(frame_bgr=None)  # will be aborted if no crowns
             # aborted path — ensure no crash and returns None or dict
             # now simulate a proper win by calling learner directly then distil
             from clash_jev.playstyle import distil_from_journal
@@ -176,7 +173,6 @@ class AutoCopyWiringTests(unittest.TestCase):
     def test_opponent_deck_saved(self):
         from adapters.clash_adapter import ClashBattleAdapter
         from clash_jev.playstyle import get_style
-        from clash_jev.units import Unit
 
         ad = ClashBattleAdapter()
         ad.perception.opponent.seen_cards = {"hog": 2, "fireball": 1, "cannon": 1}

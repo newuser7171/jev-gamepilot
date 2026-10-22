@@ -8,7 +8,7 @@ No elixir: movement is continuous joystick, attacks are timed taps on the right-
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -199,7 +199,6 @@ class BrawlMatchAdapter:
         threat_urgency: float = 0.0,
         phase: str = "in_match",
     ) -> Dict[str, Any]:
-        t0 = time.time()
         self._phase = phase or "unknown"
         now = time.time()
 

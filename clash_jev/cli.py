@@ -184,7 +184,6 @@ def main() -> None:
 
     if args.command == "style":
         from clash_jev.playstyle import (
-            clone_player,
             distil_from_journal,
             list_styles,
             set_active,

@@ -6,7 +6,7 @@ Manages game configurations, keybindings, vision parameters, and Jev System One 
 from dataclasses import asdict, dataclass, field
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -1342,8 +1342,12 @@ DEFAULT_PROFILES: List[GameProfile] = [
 
 
 class ProfileManager:
-    def __init__(self, profiles_path: str = "profiles.json"):
-        self.profiles_path = profiles_path
+    def __init__(self, profiles_path: Optional[str] = None):
+        # Anchor the default next to this module: launch from any cwd and the
+        # same custom profiles load.
+        self.profiles_path = profiles_path or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "profiles.json"
+        )
         self.profiles: Dict[str, GameProfile] = {}
         self.load_profiles()
 
@@ -1364,15 +1368,27 @@ class ProfileManager:
                 print(f"[ProfileManager] Error loading profiles.json: {e}")
 
     def save_custom_profiles(self):
-        """Persists custom profiles to JSON."""
+        """Persists custom profiles to JSON.
+
+        Writes to a sibling temp file and replaces atomically: a crash or full
+        disk mid-serialization must not truncate the profile store.
+        """
         custom_list = [
             asdict(p) for p in self.profiles.values() if not p.is_builtin
         ]
+        tmp_path = f"{self.profiles_path}.{os.getpid()}.tmp"
         try:
-            with open(self.profiles_path, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(custom_list, f, indent=2)
-        except Exception as e:
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.profiles_path)
+        except OSError as e:
             print(f"[ProfileManager] Error saving profiles: {e}")
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
     def list_profiles(self) -> List[GameProfile]:
         return list(self.profiles.values())

@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import universal_brain as brain_module
-from profile_manager import GameProfile, GameAction, DEFAULT_PROFILES
+from profile_manager import DEFAULT_PROFILES
 from universal_vision import UniversalSceneState, UniversalEntity
 
 RUNNER = next(p for p in DEFAULT_PROFILES if p.id == "runner_3lane")

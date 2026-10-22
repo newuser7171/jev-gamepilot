@@ -7,7 +7,10 @@ from adapters.phone_adapter import AdbController
 from profile_manager import DEFAULT_PROFILES
 from universal_brain import UniversalBrain
 from universal_vision import UniversalEntity, UniversalSceneState
-from test_input_controller import controller
+try:  # package import (python run_tests.py) vs flat discovery (-s tests)
+    from tests.test_input_controller import controller
+except ImportError:  # pragma: no cover - legacy flat invocation
+    from test_input_controller import controller
 
 
 class TapRoutingTests(unittest.TestCase):

@@ -4,7 +4,7 @@ Provides a visual library of all 28+ supported games across Phone (ADB) and PC,
 with real-time keyword search, category filtering, and instant one-click activation.
 """
 
-from typing import Callable, List, Optional
+from typing import Callable, List
 import customtkinter as ctk
 
 from profile_manager import GameProfile, ProfileManager

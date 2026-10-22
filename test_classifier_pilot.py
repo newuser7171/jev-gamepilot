@@ -4,10 +4,7 @@ import urllib.request
 
 def test_gamepilot_decision():
     print("=== TEST JEV-GAMEPILOT TACTICAL DECISION VIA CLASSIFIER.DEV ===")
-    
-    # Dino profile actions
-    labels = ["jump", "duck", "wait"]
-    
+
     situations = [
         "Chrome Dino Runner: Player is running at speed 12. A low cactus obstacle is approaching fast at distance 65px directly ahead on ground level.",
         "Chrome Dino Runner: Player is running. A high flying pterodactyl bird is approaching at eye level (height 50px).",

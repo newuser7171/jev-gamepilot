@@ -7,18 +7,17 @@ and universal input automation across any game profile.
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional
 
 # Ensure Windows cp1252 handles Unicode emojis safely
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-import cv2
 import numpy as np
 from adapters.dino_adapter import DinoAdapter, DinoGameState
 from adapters.screen_chess_adapter import ScreenChessAdapter
 from input_controller import InputController
-from profile_manager import GameAction, GameProfile, ProfileManager
+from profile_manager import GameProfile, ProfileManager
 from universal_brain import UniversalBrain
 from universal_vision import UniversalSceneState, UniversalVision
 from vision_engine import VisionEngine
@@ -52,6 +51,7 @@ class PilotCore:
         self.total_actions = 0
         self.total_jumps = 0
         self.total_ducks = 0
+        self.last_error: Optional[str] = None
 
         self.telemetry_callback: Optional[Callable[[Dict[str, Any]], None]] = (
             None
@@ -61,6 +61,10 @@ class PilotCore:
         prof = self.profile_mgr.get_profile(profile_id)
         if prof:
             self.current_profile = prof
+            # The cached decision belongs to the old game. Without this, the
+            # first tick after a switch dispatches the previous profile's action
+            # against the new profile's keymap.
+            self.universal_brain.reset_decision("profile_switch")
             print(f"[PilotCore] Switched profile to: {prof.name}")
             return True
         return False
@@ -81,6 +85,7 @@ class PilotCore:
 
         self.is_running = True
         self.is_armed = arm_inputs
+        self.last_error = None
         if arm_inputs:
             self.input_ctrl.enable()
         else:
@@ -92,14 +97,35 @@ class PilotCore:
         self.loop_thread.start()
         print(f"[PilotCore] Started in universal mode: {self.current_profile.name}")
 
-    def stop(self):
+    def stop(self, join_timeout: float = 2.0):
+        """Stop the loop and always release held keys. Safe to call twice."""
         self.is_running = False
         self.is_armed = False
         self.input_ctrl.disable()
+        thread = self.loop_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=join_timeout)
+        self.loop_thread = None
         print("[PilotCore] Stopped.")
+
+    def close(self):
+        """Full teardown: stop the loop, the brain worker and the screen grabber."""
+        self.stop()
+        self.universal_brain.close()
+        self.vision.close()
+
+    def latest_decision(self) -> Dict[str, Any]:
+        """Newest decision from the loop (falls back to the brain cache).
+
+        The dino reflex path never touches the brain cache, so the loop's own
+        record is the authoritative one once the pilot has started.
+        """
+        decision = self.last_decision
+        return dict(decision) if decision else self.universal_brain.snapshot_decision()
 
     def _run_loop(self):
         last_action_time = 0.0
+        last_error_log = 0.0
 
         while self.is_running:
             t0 = time.perf_counter()
@@ -264,8 +290,12 @@ class PilotCore:
                         }
                     )
 
-            except Exception as e:
-                print(f"[PilotCore] Universal loop error: {e}")
+            except Exception as exc:  # never let one bad frame kill the loop
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                now = time.monotonic()
+                if now - last_error_log >= 5.0:
+                    print(f"[PilotCore] Universal loop error: {self.last_error}")
+                    last_error_log = now
                 time.sleep(0.05)
 
             elapsed = time.perf_counter() - t0

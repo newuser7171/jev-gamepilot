@@ -5,10 +5,8 @@ and testing Jev System One decisions.
 """
 
 import argparse
-import os
 import sys
 import time
-import webbrowser
 
 # Ensure Windows cp1252 handles Unicode safely
 if hasattr(sys.stdout, "reconfigure"):
@@ -175,6 +173,7 @@ def test_brain():
             else:
                 table.add_row(prof.id, "[red]FAILED[/red]", "-", "-", "-")
 
+    brain.close()
     console.print(table)
 
 
@@ -219,14 +218,15 @@ def run_headless(
     try:
         while True:
             time.sleep(0.5)
-            dec = core.last_decision
+            dec = core.latest_decision()
             act = dec.get("action", "wait").upper()
             console.print(
                 f"[dim]{round(core.fps, 1)} FPS[/dim] | Action: [bold cyan]{act:<14}[/] | Actions Executed: [green]{core.total_actions}[/]"
             )
     except KeyboardInterrupt:
         console.print("\n[bold red]Stopping Jev-GamePilot...[/bold red]")
-        core.stop()
+    finally:
+        core.close()
 
 
 def main():

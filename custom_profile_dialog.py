@@ -4,7 +4,7 @@ Allows users to create, configure, and save autonomous AI profiles for ANY game.
 """
 
 import customtkinter as ctk
-from profile_manager import GameAction, GameProfile, ProfileManager
+from profile_manager import GameAction, ProfileManager
 
 
 class CustomProfileDialog(ctk.CTkToplevel):

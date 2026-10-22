@@ -4,9 +4,8 @@ Divides the viewport into 3 dynamic perspective lanes (Left, Center, Right),
 tracks obstacles, trains, and coins, and evaluates maneuvers.
 """
 
-from dataclasses import dataclass, field
-import time
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Optional
 import cv2
 import numpy as np
 

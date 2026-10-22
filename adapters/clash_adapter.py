@@ -17,35 +17,24 @@ import json
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Tuple, Optional, List, Dict
 
-import cv2
 import numpy as np
 
 # Import clash-jev primitives
-from clash_jev.cards import CARDS, info, profile, card_class, archetypes, describe, hits_air, known, base_name
-from clash_jev.strategies import STRATEGIES, Strategy, SAVE, HOLD, NO_PLAY
+from clash_jev.cards import info, archetypes
+from clash_jev.strategies import STRATEGIES, NO_PLAY
 from clash_jev.policy import STRATEGY_INSTRUCTIONS
 from clash_jev.moves import (
     Square,
     legal_squares,
-    spell_targets,
     BRIDGE,
-    TOWER_FRONT,
-    BACK,
-    CENTRE,
-    ENEMY_TOWER,
-    POCKET,
-    ENEMY_KING,
-    ALL_SQUARES,
 )
-from clash_jev.state import BattleState, HandCard, LaneView, Towers
-from clash_jev.perception import Perception, Layout
-from clash_jev.screenmap import REFERENCE, ScreenMap
-from clash_jev.units import Unit, find_units
-from clash_jev.troops import TroopClassifier
+from clash_jev.state import BattleState, HandCard, Towers
+from clash_jev.perception import Perception
+from clash_jev.screenmap import ScreenMap
+from clash_jev.units import Unit
 from clash_jev.hand import HandReader, HAND_TAP_POINTS, CatalogBank, _slot_box, _is_empty, player_deck
 from clash_jev.learn import (
     SelfImprover,
@@ -927,6 +916,7 @@ class ClashBattleAdapter:
         self._fusion_lock = threading.Lock()
         self._fusion_cache: Optional[Dict[str, Any]] = None
         self._fusion_thread: Optional[threading.Thread] = None
+        self._fusion_stop = threading.Event()
         self._fusion_min_conf = float(os.environ.get("FUSION_MIN_CONF", "0.55"))
         self._fusion_max_age = float(os.environ.get("FUSION_MAX_AGE_S", "8.0"))
         self._fusion_refresh_s = float(os.environ.get("FUSION_REFRESH_S", "0.75"))
@@ -1342,7 +1332,25 @@ class ClashBattleAdapter:
             return
         self._fusion_query = query
         self._fusion_profile = profile
+        self._fusion_stop.clear()
         self._start_fusion_thread()
+
+    def detach_fusion(self, join_timeout: float = 1.5) -> None:
+        """Stop the cache-refresh thread and drop the brain reference.
+
+        Without this, every brain instance leaves a `clash-fusion` thread
+        waking twice a second for the life of the process, holding the adapter
+        (and through it the brain) alive after close().
+        """
+        self._fusion_stop.set()
+        thread = self._fusion_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=join_timeout)
+        self._fusion_thread = None
+        self._fusion_query = None
+        self._fusion_profile = None
+        with self._fusion_lock:
+            self._fusion_cache = None
 
     def _start_fusion_thread(self) -> None:
         if self._fusion_thread and self._fusion_thread.is_alive():
@@ -1421,13 +1429,13 @@ class ClashBattleAdapter:
         return True
 
     def _fusion_loop(self) -> None:
-        while True:
+        while not self._fusion_stop.is_set():
             try:
                 if self._fusion_query is not None and self._last_state is not None:
                     self._fusion_refresh_once()
             except Exception as exc:
                 self._fusion_error = f"loop: {exc!r}"
-            time.sleep(self._fusion_refresh_s)
+            self._fusion_stop.wait(self._fusion_refresh_s)
 
     def _fusion_snapshot(self) -> Optional[Dict[str, Any]]:
         with self._fusion_lock:

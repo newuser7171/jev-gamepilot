@@ -10,26 +10,21 @@ Autonomous AI Gaming Agent for PC titles:
 
 import argparse
 import ctypes
-import os
-import re
 import sys
-import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import cv2
-import numpy as np
 import pygetwindow as gw
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 
 from input_controller import InputController
-from profile_manager import GameAction, GameProfile, ProfileManager
+from profile_manager import GameProfile, ProfileManager
 from universal_brain import UniversalBrain
 from universal_vision import UniversalSceneState, UniversalVision
 from vision_engine import VisionEngine
@@ -184,6 +179,21 @@ class PcGamePilot:
                 pass
 
     def run(self, show_preview: bool = True):
+        """Run until ESC/Q, Ctrl+C or a fatal error — inputs always released."""
+        try:
+            self._run_loop(show_preview=show_preview)
+        except KeyboardInterrupt:
+            console.print("\n[bold yellow]🛑 Interrupted — releasing inputs.[/bold yellow]")
+        finally:
+            # Safety invariant: whatever ended the loop, hardware inputs must be
+            # released before the process exits.
+            cv2.destroyAllWindows()
+            self.input_ctrl.disable()
+            self.vision.close()
+            self.brain.close()
+            console.print("[bold cyan]✓ PC Game Pilot Session Terminated Cleanly.[/bold cyan]")
+
+    def _run_loop(self, show_preview: bool = True):
         """Main autonomous perception-action loop for PC games."""
         reg = self.vision.region
         console.print(
@@ -268,9 +278,11 @@ class PcGamePilot:
                 self.last_action_time = now
                 self.last_dispatched_action = action_name
 
+                confidence = decision.get("confidence")
+                confidence_text = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else "n/a"
                 console.print(
                     f"[bold green]⚡ [PC ACTION][/bold green] [bold white]{action_name.upper()}[/] "
-                    f"({decision.get('source')} | conf: {decision.get('confidence'):.2f} | lat: {decision.get('latency_ms', 0)}ms)"
+                    f"({decision.get('source')} | conf: {confidence_text} | lat: {decision.get('latency_ms', 0)}ms)"
                 )
 
             # 5. Live Debug HUD Rendering
@@ -329,11 +341,6 @@ class PcGamePilot:
             self.fps = 1.0 / dt if dt > 0 else 60.0
             if dt < 0.012:
                 time.sleep(0.012 - dt)
-
-        cv2.destroyAllWindows()
-        self.input_ctrl.disable()
-        self.vision.close()
-        console.print("[bold cyan]✓ PC Game Pilot Session Terminated Cleanly.[/bold cyan]")
 
 
 def main():

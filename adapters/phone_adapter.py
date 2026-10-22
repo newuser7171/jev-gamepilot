@@ -9,7 +9,6 @@ Connects directly to an Android phone over USB or Wi-Fi via ADB:
 
 import os
 import re
-import sys
 import time
 import math
 import subprocess
@@ -275,6 +274,30 @@ class AdbController:
             pass
         return self.screen_width, self.screen_height
 
+    def _exec_out(self, args: list[str], timeout: float) -> Optional[bytes]:
+        """Run `adb exec-out <args>` and return the raw byte stream.
+
+        The child is killed on timeout: a stalled screencap on a wedged device
+        would otherwise leak one adb process per frame, which at stream rate is
+        hundreds of orphans per minute.
+        """
+        cmd = self._cmd_prefix() + ["exec-out", *args]
+        proc = None
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            raw_bytes, _ = proc.communicate(timeout=timeout)
+            return raw_bytes
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return None
+        except OSError:
+            return None
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
     def capture_frame(self) -> Optional[np.ndarray]:
         """
         Captures raw screenshot directly from phone into OpenCV BGR numpy array.
@@ -284,37 +307,17 @@ class AdbController:
         Automatically synchronizes touch screen coordinates to active orientation!
         """
         # 1. Fast Raw RGBA framebuffer stream
-        try:
-            cmd = self._cmd_prefix() + ["exec-out", "screencap"]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            raw_bytes, _ = proc.communicate(timeout=4.5)
-            if len(raw_bytes) >= 16:
-                w = int.from_bytes(raw_bytes[0:4], byteorder="little")
-                h = int.from_bytes(raw_bytes[4:8], byteorder="little")
-                expected = 16 + w * h * 4
-                if len(raw_bytes) >= expected and w > 0 and h > 0:
+        raw_bytes = self._exec_out(["screencap"], 4.5)
+        if raw_bytes is not None and len(raw_bytes) >= 16:
+            w = int.from_bytes(raw_bytes[0:4], byteorder="little")
+            h = int.from_bytes(raw_bytes[4:8], byteorder="little")
+            expected = 16 + w * h * 4
+            if len(raw_bytes) >= expected and w > 0 and h > 0:
+                try:
                     rgba = np.frombuffer(raw_bytes[16:expected], dtype=np.uint8).reshape((h, w, 4))
                     frame = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
-                    self._sync_screen_dimensions(frame)
-                    with self._frame_lock:
-                        self._latest_frame = frame
-                        self._frame_id += 1
-                    self._new_frame_event.set()
-                    return frame
-        except Exception:
-            pass
-
-        # 2. Fallback PNG stream
-        try:
-            cmd = self._cmd_prefix() + ["exec-out", "screencap", "-p"]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            raw_bytes, _ = proc.communicate(timeout=5.0)
-            if raw_bytes:
-                img_arr = np.frombuffer(raw_bytes, dtype=np.uint8)
-                frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-                if frame is None and b"\r\n" in raw_bytes:
-                    clean = raw_bytes.replace(b"\r\n", b"\n")
-                    frame = cv2.imdecode(np.frombuffer(clean, dtype=np.uint8), cv2.IMREAD_COLOR)
+                except (ValueError, cv2.error):
+                    frame = None
                 if frame is not None:
                     self._sync_screen_dimensions(frame)
                     with self._frame_lock:
@@ -322,8 +325,22 @@ class AdbController:
                         self._frame_id += 1
                     self._new_frame_event.set()
                     return frame
-        except Exception:
-            pass
+
+        # 2. Fallback PNG stream
+        raw_bytes = self._exec_out(["screencap", "-p"], 5.0)
+        if raw_bytes:
+            img_arr = np.frombuffer(raw_bytes, dtype=np.uint8)
+            frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+            if frame is None and b"\r\n" in raw_bytes:
+                clean = raw_bytes.replace(b"\r\n", b"\n")
+                frame = cv2.imdecode(np.frombuffer(clean, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is not None:
+                self._sync_screen_dimensions(frame)
+                with self._frame_lock:
+                    self._latest_frame = frame
+                    self._frame_id += 1
+                self._new_frame_event.set()
+                return frame
 
         return None
 
@@ -335,7 +352,12 @@ class AdbController:
 
         def worker():
             while self._streaming:
-                self.capture_frame()
+                try:
+                    self.capture_frame()
+                except Exception:
+                    # A transient adb/USB failure must not kill the streamer;
+                    # the next tick retries the pipe.
+                    time.sleep(0.2)
                 time.sleep(0.01)
 
         self._stream_thread = threading.Thread(target=worker, daemon=True, name="AdbFrameStreamer")
@@ -578,7 +600,7 @@ class AdbController:
     def _get_solitaire_column_exposed_y(self, col_idx: int) -> int:
         """Finds the y-coordinate of the exposed card in column col_idx using CV scan or geometric fallback."""
         col_idx = max(0, min(6, col_idx))
-        h, w = self.screen_height, self.screen_width
+        h = self.screen_height
         if self.is_landscape:
             return int(h * 0.55)
 

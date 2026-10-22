@@ -1,7 +1,6 @@
 """
 Verification test suite for Jev-GamePilot 8 Ball Pool & Game Catalog.
 """
-import sys
 import numpy as np
 
 def run_tests():

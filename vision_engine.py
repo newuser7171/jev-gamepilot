@@ -4,7 +4,7 @@ Captures screen regions at high frame rates using mss and provides window detect
 """
 
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 import cv2
 import mss
 import numpy as np

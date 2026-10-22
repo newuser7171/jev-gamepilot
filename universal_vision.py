@@ -7,7 +7,7 @@ identifies oncoming threat vectors, and pinpoints clickable targets.
 from dataclasses import dataclass, field
 import math
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 from profile_manager import GameProfile
@@ -564,7 +564,6 @@ class UniversalVision:
                 return scene
 
             # 3. Detect Balls on Table Inner Felt
-            table_bounds = frame_bgr[table_y1:table_y2, table_x1:table_x2]
             gray_bounds = gray[table_y1:table_y2, table_x1:table_x2]
             blurred = cv2.GaussianBlur(gray_bounds, (9, 9), 2)
             circles = cv2.HoughCircles(

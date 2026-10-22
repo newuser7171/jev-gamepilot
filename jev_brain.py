@@ -3,10 +3,9 @@ Jev System One Brain for Jev-GamePilot.
 Translates real-time visual game state into semantic decisions using TypeSafe Jev System One.
 """
 
-import os
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
 

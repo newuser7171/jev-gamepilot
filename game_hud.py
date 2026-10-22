@@ -9,26 +9,23 @@ Built with CustomTkinter to deliver a universal autonomous gaming AI:
 """
 
 import ctypes
-import os
 import re
 import subprocess
-import sys
 import threading
 import time
-import webbrowser
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional
 
 import cv2
 import customtkinter as ctk
 import numpy as np
 from PIL import Image, ImageTk
 
-from adapters.phone_adapter import AdbController, PACKAGE_PROFILE_MAP
+from adapters.phone_adapter import AdbController
 from all_games_dialog import AllGamesDialog
 from custom_profile_dialog import CustomProfileDialog
 from embedded_dino import EmbeddedDinoArena
 from pilot_core import PilotCore
-from profile_manager import GameAction, GameProfile, ProfileManager
+from profile_manager import GameProfile, ProfileManager
 from universal_brain import UniversalBrain
 from universal_vision import UniversalSceneState, UniversalVision
 
@@ -48,6 +45,14 @@ class GamePilotHUD(ctk.CTk):
         # Core Engines
         self.core = PilotCore()
         self.core.set_telemetry_callback(self._on_telemetry_update)
+
+        # Telemetry hand-off: the pilot/phone workers only stash the newest
+        # frame; a GUI-thread timer renders it. Tk is single-threaded and a
+        # 60 FPS producer calling `after` outruns the widget pass.
+        self._telemetry_lock = threading.Lock()
+        self._pending_telemetry: Optional[dict] = None
+        self._pending_phone_telemetry: Optional[dict] = None
+        self._pending_phone_profile_id: Optional[str] = None
 
         # Phone Pilot Engine
         self.phone_adb = AdbController()
@@ -78,6 +83,9 @@ class GamePilotHUD(ctk.CTk):
         self._build_header()
         self._build_main_layout()
         self._build_mini_layout()
+
+        # Single GUI-side consumer for both telemetry producers.
+        self.after(16, self._telemetry_pump)
 
         # Keyboard shortcuts
         self.bind("<Escape>", lambda e: self.emergency_stop())
@@ -1161,7 +1169,7 @@ class GamePilotHUD(ctk.CTk):
             self.phone_total_actions += 1
             self.action_badge.configure(text=action_name.upper())
             self.counters_lbl.configure(text=f"Total Actions: {self.phone_total_actions}")
-        except Exception as e:
+        except Exception:
             pass
 
     def _on_video_click(self, event):
@@ -1260,7 +1268,8 @@ class GamePilotHUD(ctk.CTk):
                             new_p = self.phone_profile_mgr.get_profile(det_id)
                             if new_p and new_p.id != self.phone_profile.id:
                                 self.phone_profile = new_p
-                                self.after(0, self._sync_phone_profile_dropdown, new_p.id)
+                                with self._telemetry_lock:
+                                    self._pending_phone_profile_id = new_p.id
 
                 # 1. Perception
                 scene: UniversalSceneState = self.phone_vision.analyze_frame(
@@ -1322,7 +1331,7 @@ class GamePilotHUD(ctk.CTk):
                     frame, scene, self.phone_profile
                 )
 
-                # 5. Push telemetry
+                # 5. Push telemetry (stash only: the GUI timer renders it)
                 telemetry = {
                     "frame": annotated,
                     "scene": scene,
@@ -1332,7 +1341,7 @@ class GamePilotHUD(ctk.CTk):
                     "profile": self.phone_profile,
                     "fps": curr_fps,
                 }
-                self.after(0, self._render_phone_telemetry_ui, telemetry)
+                self._queue_phone_telemetry(telemetry)
                 time.sleep(0.01)
 
         self._phone_worker_thread = threading.Thread(target=worker, daemon=True)
@@ -1704,7 +1713,44 @@ class GamePilotHUD(ctk.CTk):
         )
 
     def _on_telemetry_update(self, data: dict):
-        self.after(0, self._render_telemetry_ui, data)
+        """Pilot-thread callback: keep only the newest frame for the GUI."""
+        with self._telemetry_lock:
+            self._pending_telemetry = data
+
+    def _queue_phone_telemetry(self, data: dict):
+        """Phone-worker callback: same newest-wins hand-off."""
+        with self._telemetry_lock:
+            self._pending_phone_telemetry = data
+
+    def _telemetry_pump(self):
+        """GUI-thread drain. Renders at most one frame per producer per tick."""
+        with self._telemetry_lock:
+            desktop, self._pending_telemetry = self._pending_telemetry, None
+            phone, self._pending_phone_telemetry = self._pending_phone_telemetry, None
+            profile_id, self._pending_phone_profile_id = self._pending_phone_profile_id, None
+
+        if profile_id is not None:
+            try:
+                self._sync_phone_profile_dropdown(profile_id)
+            except Exception:
+                pass
+
+        for data, render in (
+            (desktop, self._render_telemetry_ui),
+            (phone, self._render_phone_telemetry_ui),
+        ):
+            if data is None:
+                continue
+            try:
+                render(data)
+            except Exception:
+                # A widget mid-teardown during shutdown is not a pilot error.
+                pass
+
+        try:
+            self.after(16, self._telemetry_pump)
+        except Exception:
+            pass
 
     def _render_telemetry_ui(self, data: dict):
         if self.active_arena_mode != "external":

@@ -193,6 +193,7 @@ class LocalEscalationOrderTests(unittest.TestCase):
         brain.openjev_engine = object()
         brain.gliner_engine = None
         brain._gliner_tried = False
+        brain.gliner_auto = True  # JEV_ENABLE_GLINER=1 equivalent
         brain.llm2jev_engine = None
         weak = _decision("maintain_course", 0.40, "local_openjev")
         with patch.object(brain, "_query_local_openjev", return_value=weak), \

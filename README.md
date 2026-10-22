@@ -89,6 +89,9 @@ jev-gamepilot/
 └── cli.py                     # Universal CLI interface
 ```
 
+Also: `run_tests.py` (offline suite runner), `pyproject.toml` (ruff/pytest
+config), `.github/workflows/ci.yml` (Windows lint + offline suite).
+
 ---
 
 ## 🛡️ Safety & Fail-Safes
@@ -96,10 +99,46 @@ jev-gamepilot/
 * **ESC / Q**: Instant emergency stop and shutdown.
 * **Space / F8**: Toggle inputs between **ARMED** (live controls) and **DISARMED** (monitor only).
 * **Failsafe Corner**: Flick mouse to top-left corner (0, 0) for immediate PyAutoGUI hardware interrupt.
+* **Crash-safe teardown**: whatever ends the loop (ESC, Ctrl+C, exception), held keys are released and the capture handle is closed in a `finally` block.
+
+## 🧠 Brain tiers and env switches
+
+The fusion ladder runs fastest-first: Laya → openjev → hosted Fastino →
+local GLiNER → LLM2Jev → Bev → TypeSafe → Simple Jev → classifier.dev.
+Optional backends are *located* with `importlib.util.find_spec` at import time
+and imported inside their loader threads, so `--help` and the HUD open in
+seconds even on a machine with no torch stack.
+
+| Variable | Default | Effect |
+| :--- | :--- | :--- |
+| `JEV_OFFLINE` | `0` | `1` starts no weight loaders and downloads nothing; heuristic/cloud tiers still run. The test runner sets this. |
+| `JEV_ENABLE_GLINER` | `0` | `1` lets a weak openjev tick background-load the local 340M GLiNER weights (~1.9 GB RAM, multi-second warm-up). |
+| `LLM2JEV_MODEL` | unset | Local path or HF id; enables the LLM2Jev loader. |
+| `OPENJEV_PATH` | `models/openjev` | Local openjev weights directory. |
+| `LAYA_FAST_PATH_CONF` | `0.88` | Laya confidence needed to skip escalation. |
+| `LOCAL_ACCEPT_CONF` | `0.72` | Local-tier confidence needed to skip deeper tiers. |
+| `FAST_PATH_THREAT_GATE` | `0.60` | Threat level that blocks a passive fast-path commit. |
+| `TYPESAFE_API_KEY` | unset | Enables the TypeSafe cloud tier. |
+| `FASTINO_API_KEY` | unset | Enables the hosted GLiNER tier. |
+| `FEATHERLESS_API_KEY` | unset | Simple Jev tier (keyless demo works without it). |
+| `BEV_URL` | `http://127.0.0.1:18781` | Local Bev SystemOne endpoint. |
 
 ## Offline regression tests
 
-Run `python -m unittest discover -s tests -v` from the repository folder.
-These tests mock desktop APIs: they do not send keyboard/mouse events, contact
-AI services, or require a running game. The separate `test_classifier_pilot.py`
-script is a live network smoke test and is not part of this offline suite.
+```powershell
+python run_tests.py          # 350+ tests, ~20s, no weights, no network
+python run_tests.py -v
+python run_tests.py tests.test_input_controller
+```
+
+`run_tests.py` sets `JEV_OFFLINE=1` before discovery and imports `tests` as a
+package, so the guard applies before any test pulls in `universal_brain`.
+The suite mocks desktop APIs: it never sends keyboard/mouse events, contacts AI
+services, or requires a running game. `test_classifier_pilot.py` is a live
+network smoke test and is not part of this suite.
+
+Lint gate (defects only: undefined names, unused imports, syntax):
+
+```powershell
+python -m ruff check .
+```

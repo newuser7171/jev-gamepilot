@@ -1,0 +1,16 @@
+[tool.ruff]
+# Runtime floor is 3.10 (uses PEP 604 unions and builtin generics in hints).
+target-version = "py310"
+line-length = 120
+exclude = [".git", "models", "android", "__pycache__"]
+
+[tool.ruff.lint]
+# F: real defects (undefined names, unused imports/vars, redefinitions).
+# E9: syntax/IO errors. Everything cosmetic stays out of the gate.
+select = ["F", "E9"]
+
+[tool.pytest.ini_options]
+# `tests` is a package (guards JEV_OFFLINE=1 on import) and imports project
+# modules from the repo root.
+pythonpath = ["."]
+testpaths = ["tests"]

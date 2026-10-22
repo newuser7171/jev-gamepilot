@@ -4,7 +4,6 @@ A high-performance Tkinter Canvas implementation of the Chrome T-Rex runner
 that runs directly inside the HUD with zero window-occlusion issues.
 """
 
-import math
 import random
 import time
 import tkinter as tk
@@ -372,7 +371,6 @@ class EmbeddedDinoArena(tk.Canvas):
     def _render_scene(self, state: DinoGameState):
         self.delete("all")
         fg = "#e8eaed" if self.is_night else "#535353"
-        accent = "#00ffcc" if self.is_night else "#1a73e8"
 
         # 1. Ground Plane
         self.create_line(
@@ -501,11 +499,6 @@ class EmbeddedDinoArena(tk.Canvas):
                     )
 
         # 3. Draw Dino
-        d_outline = (
-            "#00ffcc"
-            if self.autopilot_enabled
-            else ("#ff9900" if self.is_ducking else fg)
-        )
         if self.is_ducking:
             self.create_rectangle(
                 self.dino_x,

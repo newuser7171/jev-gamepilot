@@ -1,5 +1,4 @@
 """Local fusion strengthen: env tunables, openjev-first escalation, threat gates, noul blend."""
-import json
 import os
 import unittest
 from unittest.mock import Mock, patch

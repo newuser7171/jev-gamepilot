@@ -14,7 +14,7 @@ from clash_jev.hand import (
     HandReader,
     player_deck,
 )
-from clash_jev.perception import Layout, Perception, _TOWER_BAR_COLOUR, to_reference
+from clash_jev.perception import Layout, Perception, _TOWER_BAR_COLOUR
 from clash_jev.state import BattleState, HandCard, LaneView
 from phone_pilot import clash_max_idle, clash_blind_force_action
 
