@@ -75,8 +75,12 @@ _OFFLINE = _env_flag("JEV_OFFLINE")
 _LAYA_AVAILABLE = _module_available("laya_mlx") or _module_available("laya")
 _LAYA_BACKEND = "mlx" if _module_available("laya_mlx") else ("pytorch" if _LAYA_AVAILABLE else "none")
 
-# TypeSafe SDK: cheap import, and tests patch these names directly.
+# TypeSafe SDK: cheap import, and tests patch these names directly. The names
+# always exist (None when the package is absent) so the cloud tier stays a
+# plain duck-typed dependency: patchable, inspectable, and never a NameError on
+# a machine that installed only the heuristic stack.
 _TYPESAFE_AVAILABLE = False
+Choice = Noul = Score = TypeSafeClient = None
 try:
     from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
 

@@ -16,9 +16,9 @@ jobs:
         python-version: ["3.10", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -34,6 +34,14 @@ jobs:
 
       - name: Byte-compile every module
         run: python -m compileall -q . -x "(\.git|models)"
+
+      # Nothing optional is installed here on purpose: the cloud SDK and the
+      # chess engine stay absent so the import path is proven to be optional.
+      - name: Import gate (optional backends absent)
+        env:
+          JEV_OFFLINE: "1"
+        run: |
+          python -c "import universal_brain, jev_brain, pilot_core, embedded_dino, adapters.clash_adapter, adapters.screen_chess_adapter; print('heuristic stack imports clean')"
 
       - name: Offline regression suite
         env:

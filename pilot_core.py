@@ -33,7 +33,9 @@ class PilotCore:
 
         # Specialized game adapters
         self.dino_adapter = DinoAdapter()
-        self.chess_adapter = ScreenChessAdapter()
+        # Built on first use: the chess copilot needs python-chess, which the
+        # other profiles should never have to install.
+        self._chess_adapter: Optional[ScreenChessAdapter] = None
 
         # Active game profile
         self.current_profile: GameProfile = self.profile_mgr.get_profile(
@@ -56,6 +58,13 @@ class PilotCore:
         self.telemetry_callback: Optional[Callable[[Dict[str, Any]], None]] = (
             None
         )
+
+    @property
+    def chess_adapter(self) -> ScreenChessAdapter:
+        """Lazily constructed chess copilot adapter (python-chess is optional)."""
+        if self._chess_adapter is None:
+            self._chess_adapter = ScreenChessAdapter()
+        return self._chess_adapter
 
     def set_profile(self, profile_id: str) -> bool:
         prof = self.profile_mgr.get_profile(profile_id)

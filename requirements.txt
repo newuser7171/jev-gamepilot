@@ -12,6 +12,7 @@ customtkinter>=5.2
 # Optional brain backends (safe to omit; the brain falls back tier by tier).
 # Installed is not enabled: local weight tiers load only when the env says so.
 #   typesafe-sdk                      cloud System One (TYPESAFE_API_KEY)
+#   chess                             screen chess copilot (python-chess)
 #   laya                              local sub-30ms engine (auto-detected)
 #   llm2jev                           local transformers backend (LLM2JEV_MODEL)
 #   gliner2                           local GLiNER2.5-Decide (JEV_ENABLE_GLINER=1)

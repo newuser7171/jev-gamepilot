@@ -5,13 +5,27 @@ tracks board state, detects opponent moves via square highlights,
 queries Jev System One for tactical move decisions, and executes clicks.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 import time
 from typing import Any, Dict, List, Optional, Tuple
-import chess
+
 import cv2
 import numpy as np
-from typesafe_sdk import Choice, Score, TypeSafeClient
+
+# python-chess and the TypeSafe SDK are optional. pilot_core imports this module
+# eagerly for every profile, so a missing chess/cloud stack must not make the
+# whole pilot unimportable: both are resolved on first construction instead.
+try:
+    import chess
+except ImportError:
+    chess = None
+
+try:
+    from typesafe_sdk import Choice, Score, TypeSafeClient
+except ImportError:
+    Choice = Score = TypeSafeClient = None
 
 
 @dataclass
@@ -25,6 +39,10 @@ class ChessBoardCalibration:
 
 class ScreenChessAdapter:
     def __init__(self, calibration: Optional[ChessBoardCalibration] = None):
+        if chess is None:
+            raise RuntimeError(
+                "Screen chess copilot needs python-chess: python -m pip install chess"
+            )
         self.calib = calibration or ChessBoardCalibration(
             left=300, top=150, width=560, height=560, orientation="white"
         )
@@ -33,8 +51,8 @@ class ScreenChessAdapter:
         self.last_move_squares: List[str] = []
         self.is_my_turn = True
 
-    def reset_board(self, fen: str = chess.STARTING_FEN):
-        self.board = chess.Board(fen)
+    def reset_board(self, fen: Optional[str] = None):
+        self.board = chess.Board(fen or chess.STARTING_FEN)
         self.last_move_squares.clear()
 
     def set_calibration(

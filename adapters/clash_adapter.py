@@ -22,6 +22,18 @@ from typing import Any, Tuple, Optional, List, Dict
 
 import numpy as np
 
+# TypeSafe Jev SDK is optional and may be absent (heuristic-only installs, CI).
+# Bound at module scope so the cloud tier keeps a stable, injectable shape
+# instead of a swallowed ImportError inside the query path.
+try:
+    from typesafe_sdk import Choice
+except ImportError:  # pragma: no cover - exercised on heuristic-only installs
+    class Choice:
+        """Attribute-carrying stand-in for the SDK's typed question."""
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
 # Import clash-jev primitives
 from clash_jev.cards import info, archetypes
 from clash_jev.strategies import STRATEGIES, NO_PLAY
@@ -1568,7 +1580,6 @@ class ClashBattleAdapter:
         if not self._circuit_alive("cloud"):
             return None
         try:
-            from typesafe_sdk import Choice
             from clash_jev.policy import build_state as jev_build_state
 
             q = {"strategy": Choice(instructions=STRATEGY_INSTRUCTIONS, criteria=self._strategy_criteria())}

@@ -7,7 +7,12 @@ import threading
 import time
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
-from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
+
+# Optional cloud SDK: the Dino reflex path must run on a heuristic-only install.
+try:
+    from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
+except ImportError:
+    Choice = Noul = Score = TypeSafeClient = None
 
 # Load environment
 load_dotenv()
@@ -15,7 +20,7 @@ load_dotenv()
 
 class JevBrain:
     def __init__(self, model_name: str = "jev-latest"):
-        self.client = TypeSafeClient()
+        self.client = TypeSafeClient() if TypeSafeClient is not None else None
         self.model_name = model_name
         self.last_decision: Dict[str, Any] = {
             "action": "run_normal",
@@ -35,6 +40,9 @@ class JevBrain:
         Queries TypeSafe Jev System One for tactical decision in Dino Runner.
         """
         t0 = time.perf_counter()
+        if self.client is None:
+            # No SDK installed: the vision reflex tiers already own the decision.
+            return None
         try:
             questions = {
                 "tactical_action": Choice(
